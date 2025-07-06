@@ -270,8 +270,9 @@ async function startServer() {
         .then(() => recordingManager.loadAllSessions())
         .then(() => {
           console.log('Recording manager fully initialized');
-          // Preload default Whisper model in background
-          return recordingManager.preloadDefaultModel();
+          // Skip preloading default model to improve startup time
+          // Models will be loaded on-demand when first used
+          // return recordingManager.preloadDefaultModel();
         })
         .catch(error => console.error('Failed to initialize:', error));
     });

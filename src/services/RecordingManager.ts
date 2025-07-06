@@ -1,6 +1,7 @@
 import { AudioRecorder } from './AudioRecorder.js';
 import { WhisperService } from './WhisperService.js';
 import { WhisperPythonService } from './WhisperPythonService.js';
+import { FasterWhisperService } from './FasterWhisperService.js';
 import { RecordingSession, RecordingConfig, TranscriptionResult, AudioFile } from '../types/index.js';
 import fs from 'fs';
 import path from 'path';
@@ -9,6 +10,7 @@ export class RecordingManager {
   private audioRecorder: AudioRecorder;
   private whisperService: WhisperService;
   private whisperPythonService: WhisperPythonService;
+  private fasterWhisperService: FasterWhisperService;
   private sessions: Map<string, RecordingSession> = new Map();
   private dataDir: string;
   private whisperServiceCache: Map<string, WhisperService> = new Map();
@@ -21,6 +23,7 @@ export class RecordingManager {
     this.audioRecorder = new AudioRecorder(path.join(dataDir, 'recordings'));
     this.whisperService = new WhisperService(whisperModel);
     this.whisperPythonService = new WhisperPythonService(path.join(dataDir, 'transcriptions'));
+    this.fasterWhisperService = new FasterWhisperService();
     this.ensureDataDir();
     
     // Add default model to cache
@@ -194,6 +197,26 @@ export class RecordingManager {
   async transcribeFile(filePath: string, modelName?: string): Promise<TranscriptionResult> {
     // Use the requested model or default
     const targetModel = modelName || 'Xenova/whisper-medium';
+    
+    console.log(`RecordingManager.transcribeFile called with model: ${targetModel}`);
+    
+    // Check if this is a faster-whisper model
+    if (targetModel.startsWith('faster-whisper/')) {
+      // Check if faster-whisper is available
+      const deps = await this.fasterWhisperService.checkDependencies();
+      if (!deps.python || !deps.faster_whisper) {
+        throw new Error('faster-whisper is not installed. Please run: pip install faster-whisper');
+      }
+      
+      console.log(`Using faster-whisper model: ${targetModel}`);
+      
+      try {
+        return await this.fasterWhisperService.transcribeFile(filePath, targetModel);
+      } catch (error) {
+        console.error('faster-whisper failed:', error);
+        throw error;
+      }
+    }
     
     // Check if this is a Python Whisper model
     if (targetModel.startsWith('openai/')) {

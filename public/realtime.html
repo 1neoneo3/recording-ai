@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>リアルタイム文字起こし</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <style>
         * {
             margin: 0;
@@ -331,6 +332,12 @@
                 <option value="Xenova/whisper-large-v3">Large v3 (遅い・最高精度)</option>
                 <option value="openai/whisper-turbo">🚀 Turbo (Python版・超高速)</option>
                 <option value="openai/whisper-large-v3">🐍 Large v3 (Python版・最高精度)</option>
+                <option value="faster-whisper/tiny">⚡ Faster Tiny (最速・低精度)</option>
+                <option value="faster-whisper/base">⚡ Faster Base (超高速・標準精度)</option>
+                <option value="faster-whisper/small">⚡ Faster Small (高速・良好精度)</option>
+                <option value="faster-whisper/medium">⚡ Faster Medium (速い・高精度)</option>
+                <option value="faster-whisper/large-v2">⚡ Faster Large v2 (標準速度・最高精度)</option>
+                <option value="faster-whisper/large-v3">⚡ Faster Large v3 (標準速度・最新モデル)</option>
             </select>
         </div>
         
@@ -446,6 +453,15 @@
         let currentMimeType = null; // Store current mime type
         const processingQueue = []; // Queue for audio segments to process
         let isQueueProcessing = false; // Flag for queue processing
+        let concurrentRequests = 0; // Track concurrent API requests
+        const MAX_CONCURRENT_REQUESTS = 3; // Limit concurrent requests
+        // const MAX_QUEUE_SIZE = 4; // Maximum queue size (disabled - no limit)
+        
+        // State persistence constants
+        const STATE_KEY = 'recording_ai_state';
+        const TRANSCRIPTION_KEY = 'recording_ai_transcriptions';
+        const QUEUE_KEY = 'recording_ai_queue';
+        const STATE_VERSION = '1.1';
         
         const startBtn = document.getElementById('startBtn');
         const stopBtn = document.getElementById('stopBtn');
@@ -461,6 +477,176 @@
         const MAX_SEGMENT_DURATION = 30000; // 30 seconds
         const SILENCE_THRESHOLD = 500; // 0.5 seconds for very quick detection
         // Note: SPEAKING_THRESHOLD is defined above as 10000ms (10 seconds)
+        
+        // State management functions
+        function saveState() {
+            const state = {
+                version: STATE_VERSION,
+                isRecording: isRecording,
+                selectedModel: document.getElementById('modelSelect').value,
+                timestamp: new Date().toISOString()
+            };
+            
+            try {
+                localStorage.setItem(STATE_KEY, JSON.stringify(state));
+                console.log('State saved:', state);
+            } catch (e) {
+                console.error('Failed to save state:', e);
+            }
+        }
+        
+        function loadState() {
+            try {
+                const savedState = localStorage.getItem(STATE_KEY);
+                if (!savedState) return null;
+                
+                const state = JSON.parse(savedState);
+                if (state.version !== STATE_VERSION) {
+                    console.log('State version mismatch, ignoring saved state');
+                    return null;
+                }
+                
+                console.log('State loaded:', state);
+                return state;
+            } catch (e) {
+                console.error('Failed to load state:', e);
+                return null;
+            }
+        }
+        
+        function saveTranscriptions() {
+            const transcriptionSegments = transcriptionDiv.querySelectorAll('.transcription-segment');
+            const transcriptions = [];
+            
+            transcriptionSegments.forEach(segment => {
+                const timestamp = segment.querySelector('.timestamp')?.textContent;
+                const text = segment.querySelector('.text')?.textContent;
+                
+                if (timestamp && text && text !== '処理中...') {
+                    transcriptions.push({
+                        timestamp: timestamp,
+                        text: text
+                    });
+                }
+            });
+            
+            try {
+                localStorage.setItem(TRANSCRIPTION_KEY, JSON.stringify(transcriptions));
+                console.log(`Saved ${transcriptions.length} transcriptions`);
+            } catch (e) {
+                console.error('Failed to save transcriptions:', e);
+            }
+        }
+        
+        function loadTranscriptions() {
+            try {
+                const savedTranscriptions = localStorage.getItem(TRANSCRIPTION_KEY);
+                if (!savedTranscriptions) return;
+                
+                const transcriptions = JSON.parse(savedTranscriptions);
+                console.log(`Loading ${transcriptions.length} saved transcriptions`);
+                
+                // Clear the default message
+                if (transcriptionDiv.innerHTML.includes('録音を開始すると')) {
+                    transcriptionDiv.innerHTML = '';
+                }
+                
+                // Restore transcriptions
+                transcriptions.forEach(({ timestamp, text }) => {
+                    const segment = document.createElement('div');
+                    segment.className = 'transcription-segment';
+                    
+                    const timestampDiv = document.createElement('div');
+                    timestampDiv.className = 'timestamp';
+                    timestampDiv.textContent = timestamp;
+                    
+                    const textDiv = document.createElement('div');
+                    textDiv.className = 'text';
+                    textDiv.textContent = text;
+                    
+                    segment.appendChild(timestampDiv);
+                    segment.appendChild(textDiv);
+                    transcriptionDiv.appendChild(segment);
+                });
+                
+                // Scroll to bottom
+                transcriptionDiv.scrollTop = transcriptionDiv.scrollHeight;
+            } catch (e) {
+                console.error('Failed to load transcriptions:', e);
+            }
+        }
+        
+        function clearSavedState() {
+            try {
+                localStorage.removeItem(STATE_KEY);
+                localStorage.removeItem(TRANSCRIPTION_KEY);
+                localStorage.removeItem(QUEUE_KEY);
+                console.log('Saved state cleared');
+            } catch (e) {
+                console.error('Failed to clear saved state:', e);
+            }
+        }
+        
+        function saveQueue() {
+            try {
+                // Convert queue items to serializable format
+                const queueData = processingQueue.map(item => ({
+                    timestamp: item.timestamp.toISOString(),
+                    chunkCount: item.chunkCount,
+                    blobSize: item.blob.size,
+                    blobType: item.blob.type
+                }));
+                
+                localStorage.setItem(QUEUE_KEY, JSON.stringify({
+                    queue: queueData,
+                    isProcessing: isQueueProcessing
+                }));
+                
+                console.log(`Saved queue state: ${queueData.length} items`);
+            } catch (e) {
+                console.error('Failed to save queue:', e);
+            }
+        }
+        
+        function loadQueue() {
+            try {
+                const savedQueue = localStorage.getItem(QUEUE_KEY);
+                if (!savedQueue) return;
+                
+                const queueData = JSON.parse(savedQueue);
+                console.log(`Found saved queue with ${queueData.queue.length} items`);
+                
+                // Note: We can't restore the actual audio blobs from localStorage
+                // But we can show that there were pending items
+                if (queueData.queue.length > 0) {
+                    console.warn(`${queueData.queue.length} audio segments were lost due to page reload`);
+                    
+                    // Update queue status to show lost items
+                    const lostItemsMsg = document.createElement('div');
+                    lostItemsMsg.style.cssText = `
+                        background: #fff3cd;
+                        color: #856404;
+                        padding: 12px 16px;
+                        margin: 16px 0;
+                        border-radius: 8px;
+                        font-size: 14px;
+                        text-align: center;
+                    `;
+                    lostItemsMsg.textContent = `${queueData.queue.length}件の音声セグメントがリロードにより失われました`;
+                    
+                    // Insert after status div
+                    statusDiv.parentNode.insertBefore(lostItemsMsg, statusDiv.nextSibling);
+                    
+                    // Remove message after 5 seconds
+                    setTimeout(() => lostItemsMsg.remove(), 5000);
+                }
+                
+                // Clear the saved queue since we can't restore it
+                localStorage.removeItem(QUEUE_KEY);
+            } catch (e) {
+                console.error('Failed to load queue:', e);
+            }
+        }
         
         async function startRecording() {
             try {
@@ -609,6 +795,9 @@
                 updateStatus();
                 
                 console.log('Recording started');
+                
+                // Save state after starting recording
+                saveState();
                 
                 // Disable periodic processing - rely on VAD only
                 // periodicInterval = setInterval(() => {
@@ -793,6 +982,9 @@
             updateStatus();
             
             console.log('Recording stopped');
+            
+            // Save state after stopping recording
+            saveState();
         }
         
         // This function is no longer used with the new 10-second threshold approach
@@ -845,8 +1037,15 @@
             
             console.log(`Enqueued segment: ${chunks.length} chunks, blob size: ${audioBlob.size} bytes, queue size: ${processingQueue.length}`);
             
+            // Calculate total memory usage in queue
+            const totalMemory = processingQueue.reduce((sum, item) => sum + (item.blob ? item.blob.size : 0), 0);
+            console.log(`Total queue memory: ${(totalMemory / 1024 / 1024).toFixed(2)} MB`);
+            
             // Update queue status
             updateQueueStatus();
+            
+            // Save queue state
+            saveQueue();
             
             // Start processing queue if not already processing
             if (!isQueueProcessing) {
@@ -854,32 +1053,42 @@
             }
         }
         
-        // Process queued segments sequentially
+        // Process queued segments sequentially with concurrency limit
         async function processQueue() {
             if (isQueueProcessing || processingQueue.length === 0) return;
             
             isQueueProcessing = true;
             updateQueueStatus();
             
-            while (processingQueue.length > 0) {
+            while (processingQueue.length > 0 && concurrentRequests < MAX_CONCURRENT_REQUESTS) {
                 const segment = processingQueue.shift();
                 updateQueueStatus();
+                saveQueue(); // Save after removing from queue
                 
-                try {
-                    await processSegmentData(segment);
-                } catch (error) {
+                // Process segment without waiting (allow concurrent processing)
+                processSegmentData(segment).catch(error => {
                     console.error('Unexpected error in processSegmentData:', error);
-                    // Continue processing even if one segment fails
-                }
+                }).finally(() => {
+                    // Check if more segments need processing
+                    if (processingQueue.length > 0 && concurrentRequests < MAX_CONCURRENT_REQUESTS) {
+                        processQueue();
+                    }
+                });
+                
+                // Small delay between starting requests
+                await new Promise(resolve => setTimeout(resolve, 100));
             }
             
             isQueueProcessing = false;
             updateQueueStatus();
+            saveQueue(); // Save final state
         }
         
         // Process individual segment data
         async function processSegmentData(segment, retryCount = 0) {
-            console.log('Processing audio segment from queue...');
+            // Increment concurrent request counter
+            concurrentRequests++;
+            console.log(`Processing audio segment (concurrent: ${concurrentRequests})...`);
             console.log('Audio blob size:', segment.blob.size, 'bytes');
             console.log('Timestamp:', segment.timestamp.toLocaleTimeString('ja-JP'));
             if (retryCount > 0) {
@@ -904,6 +1113,10 @@
                 const modelSelect = document.getElementById('modelSelect');
                 formData.append('model', modelSelect.value);
                 
+                // Clear blob reference after adding to FormData
+                // (FormData keeps its own copy)
+                segment.blob = null;
+                
                 console.log('Sending to /api/transcribe...');
                 const response = await fetch('/api/transcribe', {
                     method: 'POST',
@@ -923,6 +1136,11 @@
                 // Remove processing indicator
                 if (processingDiv && processingDiv.parentNode) {
                     transcriptionDiv.removeChild(processingDiv);
+                }
+                
+                // Clear the blob to free memory
+                if (segment.blob) {
+                    segment.blob = null; // Release blob reference
                 }
                 
                 // Display transcription
@@ -968,11 +1186,18 @@
                     transcriptionDiv.removeChild(processingDiv);
                 }
                 
+                // Clear the blob to free memory on error
+                if (segment.blob) {
+                    segment.blob = null; // Release blob reference
+                }
+                
                 // Retry logic for conversion errors or connection errors
                 if ((error.message.includes('Failed to convert audio to WAV') || 
                      error.message.includes('Failed to fetch') || 
                      error.message.includes('ERR_CONNECTION_REFUSED')) && retryCount < 3) {
                     console.log(`Error occurred, retrying in 500ms... (attempt ${retryCount + 1}/3)`);
+                    // Decrement counter before retry
+                    concurrentRequests--;
                     // Wait 500ms before retry for connection issues
                     await new Promise(resolve => setTimeout(resolve, 500));
                     return processSegmentData(segment, retryCount + 1);
@@ -988,6 +1213,10 @@
                         errorDiv.textContent = '';
                     }
                 }, 3000);
+            } finally {
+                // Always decrement concurrent request counter
+                concurrentRequests--;
+                console.log(`Request completed (concurrent: ${concurrentRequests})`);
             }
         }
         
@@ -1026,6 +1255,9 @@
             
             // Scroll to bottom
             transcriptionDiv.scrollTop = transcriptionDiv.scrollHeight;
+            
+            // Save transcriptions after adding new segment
+            saveTranscriptions();
         }
         
         function updateStatus() {
@@ -1135,6 +1367,190 @@
         startBtn.addEventListener('click', startRecording);
         stopBtn.addEventListener('click', stopRecording);
         document.getElementById('copyBtn').addEventListener('click', copyAllTranscriptions);
+        
+        // Add clear button functionality (optional)
+        function addClearButton() {
+            const controlsDiv = document.querySelector('.controls');
+            const clearBtn = document.createElement('button');
+            clearBtn.id = 'clearBtn';
+            clearBtn.textContent = 'クリア';
+            clearBtn.style.backgroundColor = '#f5f5f5';
+            clearBtn.style.color = '#666';
+            clearBtn.addEventListener('click', () => {
+                if (confirm('すべての文字起こし結果を削除しますか？')) {
+                    transcriptionDiv.innerHTML = '<p style="color: #999; text-align: center; font-size: 14px;">録音を開始すると、ここに文字起こし結果が表示されます。</p>';
+                    clearSavedState();
+                }
+            });
+            controlsDiv.appendChild(clearBtn);
+        }
+        
+        // Load saved state on page load
+        window.addEventListener('DOMContentLoaded', async () => {
+            console.log('Page loaded, checking for saved state...');
+            
+            // Load saved transcriptions
+            loadTranscriptions();
+            
+            // Load queue state (shows warning if items were lost)
+            loadQueue();
+            
+            // Load saved state
+            const savedState = loadState();
+            if (savedState) {
+                // Restore selected model
+                const modelSelect = document.getElementById('modelSelect');
+                if (savedState.selectedModel) {
+                    modelSelect.value = savedState.selectedModel;
+                }
+                
+                // Show info about restored state
+                const timeDiff = Date.now() - new Date(savedState.timestamp).getTime();
+                const minutes = Math.floor(timeDiff / 60000);
+                if (minutes < 60) {
+                    console.log(`State restored from ${minutes} minutes ago`);
+                } else {
+                    const hours = Math.floor(minutes / 60);
+                    console.log(`State restored from ${hours} hours ago`);
+                }
+                
+                // Check if recording was active before reload
+                if (savedState.isRecording) {
+                    console.log('Recording was active before reload, attempting to resume...');
+                    
+                    // Show notification to user
+                    const notification = document.createElement('div');
+                    notification.style.cssText = `
+                        position: fixed;
+                        top: 20px;
+                        left: 50%;
+                        transform: translateX(-50%);
+                        background: #333;
+                        color: white;
+                        padding: 16px 24px;
+                        border-radius: 8px;
+                        box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+                        z-index: 1000;
+                        font-size: 14px;
+                        display: flex;
+                        align-items: center;
+                        gap: 12px;
+                    `;
+                    notification.innerHTML = `
+                        <span class="recording-indicator" style="display: inline-block; width: 8px; height: 8px; background: #ff4444; border-radius: 50%; animation: pulse 1.5s infinite;"></span>
+                        録音が中断されました。クリックして再開してください。
+                        <button id="resumeBtn" style="
+                            margin-left: 12px;
+                            padding: 6px 16px;
+                            background: white;
+                            color: #333;
+                            border: none;
+                            border-radius: 4px;
+                            font-size: 13px;
+                            cursor: pointer;
+                            font-weight: 500;
+                        ">再開</button>
+                    `;
+                    document.body.appendChild(notification);
+                    
+                    // Auto-resume recording when user clicks resume button
+                    const resumeBtn = document.getElementById('resumeBtn');
+                    resumeBtn.addEventListener('click', async () => {
+                        try {
+                            await startRecording();
+                            notification.remove();
+                            
+                            // Show success message
+                            const successMsg = document.createElement('div');
+                            successMsg.style.cssText = notification.style.cssText;
+                            successMsg.style.background = '#4CAF50';
+                            successMsg.innerHTML = '録音を再開しました';
+                            document.body.appendChild(successMsg);
+                            setTimeout(() => successMsg.remove(), 3000);
+                        } catch (error) {
+                            console.error('Failed to resume recording:', error);
+                            notification.innerHTML = `
+                                <span style="color: #ff6b6b;">録音の再開に失敗しました。</span>
+                                <button onclick="this.parentElement.remove()" style="
+                                    margin-left: 12px;
+                                    padding: 6px 16px;
+                                    background: white;
+                                    color: #333;
+                                    border: none;
+                                    border-radius: 4px;
+                                    font-size: 13px;
+                                    cursor: pointer;
+                                ">閉じる</button>
+                            `;
+                        }
+                    });
+                    
+                    // Also try to auto-resume if permissions were previously granted
+                    try {
+                        // Check if we have permission
+                        const permissionStatus = await navigator.permissions.query({ name: 'microphone' });
+                        if (permissionStatus.state === 'granted') {
+                            console.log('Microphone permission already granted, auto-resuming...');
+                            // Add slight delay to ensure UI is ready
+                            setTimeout(async () => {
+                                try {
+                                    await startRecording();
+                                    notification.remove();
+                                    
+                                    // Show auto-resume success
+                                    const autoResumeMsg = document.createElement('div');
+                                    autoResumeMsg.style.cssText = notification.style.cssText;
+                                    autoResumeMsg.style.background = '#4CAF50';
+                                    autoResumeMsg.innerHTML = '録音を自動的に再開しました';
+                                    document.body.appendChild(autoResumeMsg);
+                                    setTimeout(() => autoResumeMsg.remove(), 3000);
+                                } catch (error) {
+                                    console.log('Auto-resume failed, user action required');
+                                }
+                            }, 500);
+                        }
+                    } catch (error) {
+                        console.log('Permission check not supported');
+                    }
+                    
+                    // Change start button appearance to indicate resume is needed
+                    startBtn.style.animation = 'pulse 2s infinite';
+                    startBtn.style.background = '#ff4444';
+                    startBtn.textContent = '録音を再開';
+                    
+                    // Reset button appearance when clicked
+                    startBtn.addEventListener('click', function resetButton() {
+                        startBtn.style.animation = '';
+                        startBtn.style.background = '';
+                        startBtn.textContent = '録音開始';
+                        startBtn.removeEventListener('click', resetButton);
+                        if (notification.parentElement) {
+                            notification.remove();
+                        }
+                    }, { once: true });
+                }
+            }
+            
+            // Add clear button
+            addClearButton();
+        });
+        
+        // Save state when model selection changes
+        document.getElementById('modelSelect').addEventListener('change', saveState);
+        
+        // Save state periodically while recording
+        setInterval(() => {
+            if (isRecording) {
+                saveState();
+            }
+        }, 30000); // Every 30 seconds
+        
+        // Save state before page unload
+        window.addEventListener('beforeunload', () => {
+            saveState();
+            saveTranscriptions();
+            saveQueue();
+        });
     </script>
 </body>
 </html>

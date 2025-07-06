@@ -11,6 +11,8 @@ export interface TranscriptionResult {
   confidence?: number;
   language?: string;
   segments?: TranscriptionSegment[];
+  processingTime?: number;
+  metadata?: any;
 }
 
 export interface TranscriptionSegment {
