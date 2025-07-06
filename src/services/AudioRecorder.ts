@@ -72,15 +72,31 @@ export class AudioRecorder {
 
     ffmpegArgs.push(outputPath);
 
-    this.recordingProcess = spawn('ffmpeg', ffmpegArgs, {
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
+    console.log('Starting ffmpeg with args:', ffmpegArgs);
+    console.log('Output path:', outputPath);
+
+    try {
+      this.recordingProcess = spawn('ffmpeg', ffmpegArgs, {
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+    } catch (error) {
+      console.error('Failed to spawn ffmpeg process:', error);
+      throw new Error(`Failed to start recording: ${error}`);
+    }
 
     this.recordingProcess.on('error', (error) => {
-      console.error('Recording error:', error);
+      console.error('Recording process error:', error);
       if (this.currentSession) {
         this.currentSession.status = 'error';
       }
+    });
+
+    this.recordingProcess.stderr?.on('data', (data) => {
+      console.log('ffmpeg stderr:', data.toString());
+    });
+
+    this.recordingProcess.stdout?.on('data', (data) => {
+      console.log('ffmpeg stdout:', data.toString());
     });
 
     // Auto-stop recording if duration is specified
@@ -109,49 +125,80 @@ export class AudioRecorder {
       throw new Error('No recording in progress');
     }
 
+    const outputPath = this.getOutputPath(this.currentSession.id);
+    const process = this.recordingProcess;
+    const sessionId = this.currentSession.id;
+    
+    console.log(`Stopping recording for session: ${sessionId}`);
+    console.log(`Expected output path: ${outputPath}`);
+
     return new Promise((resolve, reject) => {
-      if (!this.recordingProcess || !this.currentSession) {
-        reject(new Error('No recording in progress'));
-        return;
-      }
+      // Set a timeout to prevent hanging
+      const timeout = setTimeout(() => {
+        console.error('Recording stop timeout after 10 seconds');
+        reject(new Error('Recording stop timeout'));
+      }, 10000);
 
-      const outputPath = this.getOutputPath(this.currentSession.id);
-      
-      // Send SIGINT to gracefully stop ffmpeg
-      this.recordingProcess.kill('SIGINT');
-
-      this.recordingProcess.on('exit', (code) => {
-        console.log(`Recording stopped with code: ${code}`);
+      const onExit = (code: number | null) => {
+        clearTimeout(timeout);
+        console.log(`ffmpeg process exited with code: ${code}`);
+        console.log(`Checking for output file: ${outputPath}`);
         
-        if (this.currentSession) {
-          this.currentSession.endTime = new Date();
-          this.currentSession.status = 'completed';
-        }
+        // Wait a moment for file system to sync
+        setTimeout(() => {
+          if (fs.existsSync(outputPath)) {
+            console.log(`Recording file created successfully: ${outputPath}`);
+            const stats = fs.statSync(outputPath);
+            console.log(`File size: ${stats.size} bytes`);
+            
+            const audioFile: AudioFile = {
+              path: outputPath,
+              duration: 0,
+              size: stats.size,
+              format: 'wav',
+              sampleRate: 16000,
+              channels: 1
+            };
 
-        // Check if file was created and get its info
-        if (fs.existsSync(outputPath)) {
-          const stats = fs.statSync(outputPath);
-          const audioFile: AudioFile = {
-            path: outputPath,
-            duration: 0, // Will be calculated later if needed
-            size: stats.size,
-            format: 'wav',
-            sampleRate: 16000,
-            channels: 1
-          };
+            if (this.currentSession) {
+              this.currentSession.endTime = new Date();
+              this.currentSession.status = 'completed';
+              this.currentSession.audioFile = audioFile;
+            }
 
-          if (this.currentSession) {
-            this.currentSession.audioFile = audioFile;
+            this.recordingProcess = null;
+            this.currentSession = null;
+            resolve(audioFile);
+          } else {
+            console.error(`Recording file not found at: ${outputPath}`);
+            // List files in output directory for debugging
+            if (fs.existsSync(this.outputDir)) {
+              const files = fs.readdirSync(this.outputDir);
+              console.log('Files in output directory:', files);
+            }
+            
+            this.recordingProcess = null;
+            this.currentSession = null;
+            reject(new Error(`Recording file not found at: ${outputPath}`));
           }
+        }, 500); // Wait 500ms for file system
+      };
 
-          resolve(audioFile);
-        } else {
-          reject(new Error('Recording file not found'));
-        }
-
+      const onError = (error: Error) => {
+        clearTimeout(timeout);
+        console.error('ffmpeg process error during stop:', error);
         this.recordingProcess = null;
         this.currentSession = null;
-      });
+        reject(error);
+      };
+
+      // Add event handlers
+      process.once('exit', onExit);
+      process.once('error', onError);
+      
+      // Send SIGINT to gracefully stop ffmpeg
+      console.log('Sending SIGINT to ffmpeg process...');
+      process.kill('SIGINT');
     });
   }
 

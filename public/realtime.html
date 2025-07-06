@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>リアルタイム文字起こし</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        
+        .container {
+            background-color: white;
+            border-radius: 8px;
+            padding: 30px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 30px;
+        }
+        
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        #startBtn {
+            background-color: #4CAF50;
+            color: white;
+        }
+        
+        #startBtn:hover:not(:disabled) {
+            background-color: #45a049;
+        }
+        
+        #stopBtn {
+            background-color: #f44336;
+            color: white;
+        }
+        
+        #stopBtn:hover:not(:disabled) {
+            background-color: #da190b;
+        }
+        
+        .status {
+            margin-bottom: 20px;
+            padding: 10px;
+            border-radius: 4px;
+            background-color: #e3f2fd;
+        }
+        
+        .status.recording {
+            background-color: #ffebee;
+        }
+        
+        .status.speaking {
+            background-color: #e8f5e9;
+        }
+        
+        .transcription-container {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 20px;
+            min-height: 300px;
+            max-height: 500px;
+            overflow-y: auto;
+            background-color: #fafafa;
+        }
+        
+        .transcription-segment {
+            margin-bottom: 15px;
+            padding: 10px;
+            background-color: white;
+            border-radius: 4px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        
+        .timestamp {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        
+        .text {
+            font-size: 16px;
+            line-height: 1.5;
+            color: #333;
+        }
+        
+        .error {
+            color: #f44336;
+            margin-top: 10px;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        
+        .recording-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            background-color: #f44336;
+            border-radius: 50%;
+            margin-right: 10px;
+            animation: pulse 1.5s infinite;
+        }
+        
+        .speaking-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            background-color: #4CAF50;
+            border-radius: 50%;
+            margin-right: 10px;
+            animation: pulse 0.8s infinite;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>リアルタイム文字起こし</h1>
+        
+        <div class="controls">
+            <button id="startBtn">録音開始</button>
+            <button id="stopBtn" disabled>録音停止</button>
+            <button id="transcribeBtn" disabled>手動文字起こし</button>
+        </div>
+        
+        <div id="status" class="status">
+            <div id="recordingStatus">録音停止中</div>
+            <div id="speakingStatus"></div>
+            <div id="audioLevel" style="margin-top: 10px;">
+                <label>音声レベル: </label>
+                <progress id="volumeMeter" value="0" max="100" style="width: 200px;"></progress>
+                <span id="volumeValue">0</span>
+            </div>
+        </div>
+        
+        <div id="error" class="error"></div>
+        
+        <h2>文字起こし結果</h2>
+        <div id="transcription" class="transcription-container">
+            <p style="color: #999;">録音を開始すると、ここに文字起こし結果が表示されます。</p>
+        </div>
+    </div>
+
+    <script>
+        // Fallback VAD implementation if Hark doesn't load
+        function createSimpleVAD(stream, options) {
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const analyser = audioContext.createAnalyser();
+            const microphone = audioContext.createMediaStreamSource(stream);
+            const scriptProcessor = audioContext.createScriptProcessor(2048, 1, 1);
+            
+            analyser.smoothingTimeConstant = 0.8;
+            analyser.fftSize = 1024;
+            
+            microphone.connect(analyser);
+            analyser.connect(scriptProcessor);
+            scriptProcessor.connect(audioContext.destination);
+            
+            const handlers = {
+                speaking: null,
+                stopped_speaking: null
+            };
+            
+            let speaking = false;
+            let speakingHistory = [];
+            const historyLength = 10;
+            const threshold = options.threshold || -50;
+            let fallbackSpeakingStartAt = null;
+            
+            scriptProcessor.onaudioprocess = function() {
+                const array = new Uint8Array(analyser.frequencyBinCount);
+                analyser.getByteFrequencyData(array);
+                const values = array.reduce((a, b) => a + b, 0);
+                const average = values / array.length;
+                
+                // Convert to dB
+                const db = 20 * Math.log10(average / 128);
+                
+                speakingHistory.push(db > threshold);
+                if (speakingHistory.length > historyLength) {
+                    speakingHistory.shift();
+                }
+                
+                const currentlySpeaking = speakingHistory.filter(v => v).length >= 3;
+                
+                if (currentlySpeaking && !speaking) {
+                    speaking = true;
+                    if (!fallbackSpeakingStartAt) {
+                        fallbackSpeakingStartAt = Date.now();
+                    }
+                    if (handlers.speaking) handlers.speaking();
+                } else if (!currentlySpeaking && speaking) {
+                    speaking = false;
+                    if (fallbackSpeakingStartAt) {
+                        const duration = Date.now() - fallbackSpeakingStartAt;
+                        if (duration >= SPEAKING_THRESHOLD) {
+                            fallbackSpeakingStartAt = Date.now();
+                            if (handlers.stopped_speaking) handlers.stopped_speaking();
+                        }
+                    }
+                }
+            };
+            
+            return {
+                on: function(event, handler) {
+                    handlers[event] = handler;
+                },
+                stop: function() {
+                    microphone.disconnect();
+                    analyser.disconnect();
+                    scriptProcessor.disconnect();
+                }
+            };
+        }
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/hark@1.2.3/hark.bundle.js" defer></script>
+    <script>
+        let mediaRecorder = null;
+        let audioStream = null;
+        let speechEvents = null;
+        let audioChunks = [];
+        let isRecording = false;
+        let isSpeaking = false;
+        let segmentStartTime = null;
+        let silenceTimeout = null;
+        let chunkCounter = 0; // Counter for chunks
+        let isProcessing = false; // Flag to prevent concurrent processing
+        let periodicInterval = null; // Interval for periodic processing
+        let speakingStartAt = null; // Track when speaking started
+        const SPEAKING_THRESHOLD = 0; // 即時処理（最小音声長なし）
+        let currentMimeType = null; // Store current mime type
+        const processingQueue = []; // Queue for audio segments to process
+        let isQueueProcessing = false; // Flag for queue processing
+        
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const transcribeBtn = document.getElementById('transcribeBtn');
+        const statusDiv = document.getElementById('status');
+        const recordingStatusDiv = document.getElementById('recordingStatus');
+        const speakingStatusDiv = document.getElementById('speakingStatus');
+        const transcriptionDiv = document.getElementById('transcription');
+        const errorDiv = document.getElementById('error');
+        
+        // Configuration
+        const MIN_SEGMENT_DURATION = 500; // 0.5 second minimum for very fast response
+        const MAX_SEGMENT_DURATION = 30000; // 30 seconds
+        const SILENCE_THRESHOLD = 500; // 0.5 seconds for very quick detection
+        // Note: SPEAKING_THRESHOLD is defined above as 10000ms (10 seconds)
+        
+        async function startRecording() {
+            try {
+                errorDiv.textContent = '';
+                
+                // Get microphone access with simplified settings
+                audioStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: true 
+                });
+                
+                // Set up audio level monitoring
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const analyser = audioContext.createAnalyser();
+                const microphone = audioContext.createMediaStreamSource(audioStream);
+                const scriptProcessor = audioContext.createScriptProcessor(2048, 1, 1);
+                
+                analyser.smoothingTimeConstant = 0.8;
+                analyser.fftSize = 1024;
+                
+                microphone.connect(analyser);
+                analyser.connect(scriptProcessor);
+                scriptProcessor.connect(audioContext.destination);
+                
+                scriptProcessor.onaudioprocess = function() {
+                    const array = new Uint8Array(analyser.frequencyBinCount);
+                    analyser.getByteFrequencyData(array);
+                    const values = array.reduce((a, b) => a + b, 0);
+                    const average = values / array.length;
+                    
+                    // Update volume meter
+                    document.getElementById('volumeMeter').value = average;
+                    document.getElementById('volumeValue').textContent = Math.round(average);
+                };
+                
+                // Initialize MediaRecorder
+                const mimeType = getSupportedMimeType();
+                currentMimeType = mimeType; // Store mime type
+                mediaRecorder = new MediaRecorder(audioStream, {
+                    mimeType,
+                    audioBitsPerSecond: 256000 // Higher bitrate for better quality
+                });
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                        chunkCounter++;
+                        console.log(`Audio chunk received #${chunkCounter}, size: ${event.data.size}, total chunks: ${audioChunks.length}`);
+                        
+                        // Process every 5 chunks (approximately 5 seconds)
+                        if (chunkCounter >= 5) {
+                            console.log('Processing 5 chunks automatically');
+                            // Need to stop and restart recorder for complete WebM file
+                            restartRecorderForChunks();
+                        }
+                    }
+                };
+                
+                mediaRecorder.onerror = (error) => {
+                    console.error('MediaRecorder error:', error);
+                    errorDiv.textContent = 'Recording error: ' + error.message;
+                };
+                
+                // Initialize Voice Activity Detection
+                const options = {
+                    threshold: -70, // More sensitive threshold
+                    interval: 50,
+                    history: 10,
+                    smoothing: 0.1
+                };
+                
+                // Use Hark if available, otherwise use fallback
+                if (typeof window.hark !== 'undefined') {
+                    speechEvents = window.hark(audioStream, options);
+                    console.log('Using Hark for VAD');
+                } else {
+                    console.log('Hark not available, using fallback VAD');
+                    speechEvents = createSimpleVAD(audioStream, options);
+                }
+                
+                speechEvents.on('speaking', () => {
+                    console.log('Speaking started');
+                    isSpeaking = true;
+                    
+                    // Record when speaking started if not already tracking
+                    if (!speakingStartAt) {
+                        speakingStartAt = Date.now();
+                        console.log('Started tracking speaking duration');
+                    }
+                    
+                    updateStatus();
+                    
+                    // Clear any pending silence timeout
+                    if (silenceTimeout) {
+                        clearTimeout(silenceTimeout);
+                        silenceTimeout = null;
+                    }
+                });
+                
+                speechEvents.on('stopped_speaking', () => {
+                    console.log('Speaking stopped');
+                    isSpeaking = false;
+                    updateStatus();
+                    
+                    if (!speakingStartAt) {
+                        return;
+                    }
+                    
+                    // Calculate speaking duration
+                    const speakingDuration = Date.now() - speakingStartAt;
+                    console.log(`Speaking duration: ${(speakingDuration / 1000).toFixed(1)}s`);
+                    
+                    // Check if speaking duration meets threshold
+                    if (speakingDuration < SPEAKING_THRESHOLD) {
+                        console.log(`Duration too short (${(speakingDuration / 1000).toFixed(1)}s < ${SPEAKING_THRESHOLD / 1000}s), continuing...`);
+                        return;
+                    }
+                    
+                    // Reset speaking start time
+                    speakingStartAt = Date.now();
+                    
+                    // Process the segment by restarting recorder
+                    console.log('Speaking duration threshold met, processing segment');
+                    
+                    // Restart recorder to create complete WebM file
+                    restartRecorderForChunks();
+                });
+                
+                // Start recording
+                mediaRecorder.start(1000); // Collect data every second
+                isRecording = true;
+                segmentStartTime = Date.now();
+                audioChunks = [];
+                
+                // Clear previous transcriptions or initial message
+                if (transcriptionDiv.innerHTML.includes('録音を開始すると')) {
+                    transcriptionDiv.innerHTML = '';
+                }
+                
+                // Reset chunk counter and speaking start time
+                chunkCounter = 0;
+                speakingStartAt = null;
+                
+                // Update UI
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                transcribeBtn.disabled = false;
+                updateStatus();
+                
+                console.log('Recording started');
+                
+                // Disable periodic processing - rely on VAD only
+                // periodicInterval = setInterval(() => {
+                //     if (!isProcessing && audioChunks.length > 0) {
+                //         console.log('Periodic processing triggered');
+                //         // Stop and restart MediaRecorder to get complete WebM file
+                //         restartRecordingForProcessing();
+                //     }
+                // }, 5000); // Every 5 seconds
+                
+            } catch (error) {
+                console.error('Error starting recording:', error);
+                errorDiv.textContent = 'Failed to start recording: ' + error.message;
+            }
+        }
+        
+        // This function is no longer needed with the new queue system
+        /*
+        async function restartRecordingForProcessing() {
+            if (!mediaRecorder || mediaRecorder.state !== 'recording') return;
+            
+            console.log('Restarting recorder for processing...');
+            
+            // Stop current recording
+            mediaRecorder.stop();
+            
+            // Wait for the stop event to fire and process data
+            mediaRecorder.onstop = async () => {
+                // Process the accumulated chunks
+                if (audioChunks.length > 0) {
+                    await processSegment();
+                }
+                
+                // Restart recording with same settings
+                if (isRecording && audioStream) {
+                    mediaRecorder = new MediaRecorder(audioStream, {
+                        mimeType: currentMimeType,
+                        audioBitsPerSecond: 256000
+                    });
+                    
+                    mediaRecorder.ondataavailable = (event) => {
+                        if (event.data.size > 0) {
+                            audioChunks.push(event.data);
+                            chunkCounter++;
+                            console.log(`Audio chunk received #${chunkCounter}, size: ${event.data.size}, total chunks: ${audioChunks.length}`);
+                        }
+                    };
+                    
+                    mediaRecorder.onerror = (error) => {
+                        console.error('MediaRecorder error:', error);
+                        errorDiv.textContent = 'Recording error: ' + error.message;
+                    };
+                    
+                    // Start recording again
+                    mediaRecorder.start(1000);
+                    console.log('Recording restarted');
+                }
+            };
+        }
+        */
+        
+        // Function to restart recorder for chunk processing
+        function restartRecorderForChunks() {
+            if (!mediaRecorder || mediaRecorder.state !== 'recording') {
+                console.log(`MediaRecorder not in recording state (state: ${mediaRecorder?.state}), skipping restart`);
+                return;
+            }
+            
+            console.log(`Restarting recorder for chunk processing... (state: ${mediaRecorder.state})`);
+            
+            // Set a flag to prevent recursive calls
+            if (mediaRecorder.isRestarting) {
+                console.log('Already restarting, skipping');
+                return;
+            }
+            mediaRecorder.isRestarting = true;
+            
+            // Set up one-time onstop handler for chunk processing
+            mediaRecorder.onstop = () => {
+                console.log('Recorder stopped for chunk processing');
+                
+                // Process the chunks
+                if (audioChunks.length > 0) {
+                    const chunksToProcess = [...audioChunks];
+                    console.log(`Processing ${chunksToProcess.length} chunks`);
+                    enqueueSegment(chunksToProcess, new Date());
+                    
+                    // Clear current chunks and reset counter
+                    audioChunks = [];
+                    chunkCounter = 0;
+                    segmentStartTime = Date.now();
+                }
+                
+                // Restart recording if still active
+                if (isRecording && audioStream) {
+                    // No delay - restart immediately
+                    mediaRecorder = new MediaRecorder(audioStream, {
+                        mimeType: currentMimeType,
+                        audioBitsPerSecond: 256000
+                    });
+                        
+                        mediaRecorder.ondataavailable = (event) => {
+                            if (event.data.size > 0) {
+                                audioChunks.push(event.data);
+                                chunkCounter++;
+                                console.log(`Audio chunk received #${chunkCounter}, size: ${event.data.size}, total chunks: ${audioChunks.length}`);
+                                
+                                // Process every 5 chunks
+                                if (chunkCounter >= 5) {
+                                    console.log('Processing 5 chunks automatically');
+                                    restartRecorderForChunks();
+                                }
+                            }
+                        };
+                        
+                        mediaRecorder.onerror = (error) => {
+                            console.error('MediaRecorder error:', error);
+                            errorDiv.textContent = 'Recording error: ' + error.message;
+                        };
+                        
+                    // Start recording again
+                    mediaRecorder.start(1000);
+                    mediaRecorder.isRestarting = false; // Reset the flag
+                    console.log('Recording restarted after chunk processing');
+                }
+            };
+            
+            // Request any pending data before stopping
+            if (mediaRecorder.state === 'recording') {
+                mediaRecorder.requestData();
+                // Stop immediately without delay
+                mediaRecorder.stop();
+            }
+        }
+        
+        async function stopRecording() {
+            if (!isRecording) return;
+            
+            // Stop VAD
+            if (speechEvents) {
+                speechEvents.stop();
+                speechEvents = null;
+            }
+            
+            // Stop MediaRecorder
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                
+                // Process any remaining audio
+                if (audioChunks.length > 0) {
+                    await processSegment();
+                }
+            }
+            
+            // Stop audio stream
+            if (audioStream) {
+                audioStream.getTracks().forEach(track => track.stop());
+                audioStream = null;
+            }
+            
+            // Clear timeout
+            if (silenceTimeout) {
+                clearTimeout(silenceTimeout);
+                silenceTimeout = null;
+            }
+            
+            // Clear periodic interval
+            if (periodicInterval) {
+                clearInterval(periodicInterval);
+                periodicInterval = null;
+            }
+            
+            isRecording = false;
+            isSpeaking = false;
+            mediaRecorder = null;
+            audioChunks = [];
+            
+            // Update UI
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            transcribeBtn.disabled = true;
+            updateStatus();
+            
+            console.log('Recording stopped');
+        }
+        
+        // This function is no longer used with the new 10-second threshold approach
+        /*
+        async function checkAndProcessSegment() {
+            const segmentDuration = Date.now() - segmentStartTime;
+            
+            // Check minimum duration
+            if (segmentDuration >= MIN_SEGMENT_DURATION) {
+                await processSegment();
+            } else {
+                console.log(`Segment too short (${(segmentDuration / 1000).toFixed(1)}s), waiting for more audio`);
+            }
+            
+            // Force process if maximum duration reached
+            if (segmentDuration >= MAX_SEGMENT_DURATION) {
+                await processSegment();
+            }
+        }
+        */
+        
+        // Add audio segment to processing queue
+        function enqueueSegment(chunks, timestamp) {
+            if (chunks.length === 0) return;
+            
+            // Create blob with proper mime type
+            const mimeType = currentMimeType || 'audio/webm;codecs=opus';
+            const audioBlob = new Blob(chunks, { type: mimeType });
+            
+            // Validate blob size
+            if (audioBlob.size === 0) {
+                console.warn('Empty audio blob, skipping');
+                return;
+            }
+            
+            // Skip very small blobs that might be corrupted
+            if (audioBlob.size < 1000) {
+                console.warn(`Audio blob too small (${audioBlob.size} bytes), might be corrupted, skipping`);
+                return;
+            }
+            
+            processingQueue.push({
+                blob: audioBlob,
+                timestamp: timestamp || new Date(),
+                chunkCount: chunks.length
+            });
+            
+            console.log(`Enqueued segment: ${chunks.length} chunks, blob size: ${audioBlob.size} bytes, queue size: ${processingQueue.length}`);
+            
+            // Start processing queue if not already processing
+            if (!isQueueProcessing) {
+                processQueue();
+            }
+        }
+        
+        // Process queued segments sequentially
+        async function processQueue() {
+            if (isQueueProcessing || processingQueue.length === 0) return;
+            
+            isQueueProcessing = true;
+            
+            while (processingQueue.length > 0) {
+                const segment = processingQueue.shift();
+                try {
+                    await processSegmentData(segment);
+                } catch (error) {
+                    console.error('Unexpected error in processSegmentData:', error);
+                    // Continue processing even if one segment fails
+                }
+            }
+            
+            isQueueProcessing = false;
+        }
+        
+        // Process individual segment data
+        async function processSegmentData(segment, retryCount = 0) {
+            console.log('Processing audio segment from queue...');
+            console.log('Audio blob size:', segment.blob.size, 'bytes');
+            console.log('Timestamp:', segment.timestamp.toLocaleTimeString('ja-JP'));
+            if (retryCount > 0) {
+                console.log(`Retry attempt ${retryCount}`);
+            }
+            
+            // Show processing indicator
+            const processingDiv = document.createElement('div');
+            processingDiv.className = 'transcription-segment';
+            processingDiv.style.opacity = '0.6';
+            processingDiv.innerHTML = '<div class="timestamp">' + segment.timestamp.toLocaleTimeString('ja-JP') + '</div>' +
+                                     '<div class="text" style="color: #666;">処理中...</div>';
+            transcriptionDiv.appendChild(processingDiv);
+            transcriptionDiv.scrollTop = transcriptionDiv.scrollHeight;
+            
+            try {
+                // Send to server for transcription
+                const formData = new FormData();
+                formData.append('audio', segment.blob, 'segment.webm');
+                
+                console.log('Sending to /api/transcribe...');
+                const response = await fetch('/api/transcribe', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                console.log('Response status:', response.status);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`Transcription failed: ${response.statusText} - ${errorText}`);
+                }
+                
+                const result = await response.json();
+                // console.log('Full transcription result:', JSON.stringify(result, null, 2));
+                
+                // Remove processing indicator
+                if (processingDiv && processingDiv.parentNode) {
+                    transcriptionDiv.removeChild(processingDiv);
+                }
+                
+                // Display transcription
+                // console.log('Result type:', typeof result);
+                // console.log('Result keys:', Object.keys(result));
+                
+                // Handle both direct text and nested text property
+                let transcriptionText = '';
+                if (typeof result === 'string') {
+                    transcriptionText = result;
+                } else if (result.text) {
+                    transcriptionText = result.text;
+                } else if (result.transcription) {
+                    transcriptionText = result.transcription;
+                }
+                
+                console.log('Extracted text:', transcriptionText);
+                
+                if (transcriptionText) {
+                    const cleanedText = transcriptionText.trim();
+                    console.log('Cleaned text:', cleanedText);
+                    if (cleanedText && cleanedText !== '[BLANK_AUDIO]' && !cleanedText.includes('[MUSIC]') && !cleanedText.includes('[static]') && !cleanedText.includes('[silence]')) {
+                        console.log('Adding transcription segment:', cleanedText);
+                        addTranscriptionSegment(cleanedText);
+                    } else {
+                        console.log('Skipping empty or noise transcription');
+                    }
+                } else {
+                    console.log('No text found in transcription result');
+                }
+                
+                // Reset for next segment
+                audioChunks = [];
+                segmentStartTime = Date.now();
+                
+                // Note: chunkCounter is reset in ondataavailable handler
+                
+            } catch (error) {
+                console.error('Error processing segment:', error);
+                
+                // Remove processing indicator on error
+                if (processingDiv && processingDiv.parentNode) {
+                    transcriptionDiv.removeChild(processingDiv);
+                }
+                
+                // Retry logic for conversion errors
+                if (error.message.includes('Failed to convert audio to WAV') && retryCount < 2) {
+                    console.log(`Conversion error, retrying immediately... (attempt ${retryCount + 1}/2)`);
+                    // No delay - retry immediately
+                    return processSegmentData(segment, retryCount + 1);
+                }
+                
+                // Show error but continue processing
+                console.warn('Segment processing failed, continuing with next segment...');
+                errorDiv.textContent = 'Some segments failed: ' + error.message;
+                
+                // Clear error after 3 seconds
+                setTimeout(() => {
+                    if (errorDiv.textContent.includes('Some segments failed')) {
+                        errorDiv.textContent = '';
+                    }
+                }, 3000);
+            }
+        }
+        
+        // Modified processSegment to use queue
+        async function processSegment() {
+            if (audioChunks.length === 0) return;
+            
+            console.log('Adding segment to queue...');
+            console.log('Audio chunks:', audioChunks.length);
+            console.log('Segment duration:', ((Date.now() - segmentStartTime) / 1000).toFixed(1) + 's');
+            
+            // Add to queue instead of processing directly
+            enqueueSegment([...audioChunks], new Date());
+            
+            // Reset for next segment
+            audioChunks = [];
+            segmentStartTime = Date.now();
+        }
+        
+        function addTranscriptionSegment(text) {
+            const segment = document.createElement('div');
+            segment.className = 'transcription-segment';
+            
+            const timestamp = document.createElement('div');
+            timestamp.className = 'timestamp';
+            timestamp.textContent = new Date().toLocaleTimeString('ja-JP');
+            
+            const textDiv = document.createElement('div');
+            textDiv.className = 'text';
+            textDiv.textContent = text;
+            
+            segment.appendChild(timestamp);
+            segment.appendChild(textDiv);
+            
+            transcriptionDiv.appendChild(segment);
+            
+            // Scroll to bottom
+            transcriptionDiv.scrollTop = transcriptionDiv.scrollHeight;
+        }
+        
+        function updateStatus() {
+            statusDiv.className = 'status';
+            
+            if (isRecording) {
+                statusDiv.classList.add('recording');
+                recordingStatusDiv.innerHTML = '<span class="recording-indicator"></span>録音中';
+            } else {
+                recordingStatusDiv.textContent = '録音停止中';
+            }
+            
+            if (isSpeaking) {
+                statusDiv.classList.add('speaking');
+                speakingStatusDiv.innerHTML = '<span class="speaking-indicator"></span>発話検出中';
+            } else {
+                speakingStatusDiv.textContent = '';
+            }
+        }
+        
+        function getSupportedMimeType() {
+            const types = [
+                'audio/wav',
+                'audio/webm;codecs=opus',
+                'audio/webm',
+                'audio/ogg;codecs=opus',
+                'audio/ogg'
+            ];
+            
+            for (const type of types) {
+                if (MediaRecorder.isTypeSupported(type)) {
+                    console.log(`Using MIME type: ${type}`);
+                    return type;
+                }
+            }
+            
+            throw new Error('No supported audio MIME type found');
+        }
+        
+        // Initialize event listeners after all functions are defined
+        startBtn.addEventListener('click', startRecording);
+        stopBtn.addEventListener('click', stopRecording);
+        transcribeBtn.addEventListener('click', () => {
+            if (audioChunks.length > 0) {
+                console.log('Manual transcribe triggered');
+                processSegment();
+            }
+        });
+    </script>
+</body>
+</html>

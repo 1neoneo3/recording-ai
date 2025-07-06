@@ -3,6 +3,12 @@ import cors from 'cors';
 import multer from 'multer';
 import { RecordingManager } from '../services/RecordingManager.js';
 import { RecordingConfig } from '../types/index.js';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import fs from 'fs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -11,9 +17,24 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
+// Serve static files from public directory
+const publicPath = path.resolve(__dirname, '../../public');
+console.log('Serving static files from:', publicPath);
+app.use(express.static(publicPath));
+
 // File upload configuration
+const storage = multer.diskStorage({
+  destination: './uploads/',
+  filename: (req, file, cb) => {
+    // Keep original extension
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const ext = path.extname(file.originalname) || '.webm';
+    cb(null, file.fieldname + '-' + uniqueSuffix + ext);
+  }
+});
+
 const upload = multer({
-  dest: './uploads/',
+  storage: storage,
   limits: {
     fileSize: 100 * 1024 * 1024 // 100MB limit
   }
@@ -118,11 +139,68 @@ app.post('/api/transcribe', upload.single('audio'), async (req: Request, res: Re
       return res.status(400).json({ error: 'No audio file provided' });
     }
     
-    const transcription = await recordingManager.transcribeFile(req.file.path);
+    // Check if the file needs conversion to WAV
+    const fileExt = path.extname(req.file.filename).toLowerCase();
+    let audioFilePath = req.file.path;
+    
+    // If not WAV, convert to WAV using ffmpeg
+    if (fileExt !== '.wav') {
+      const wavPath = req.file.path.replace(fileExt, '.wav');
+      const { exec } = await import('child_process');
+      const { promisify } = await import('util');
+      const execAsync = promisify(exec);
+      
+      try {
+        console.log(`Converting ${fileExt || 'webm'} to WAV: ${req.file.path} -> ${wavPath}`);
+        // Convert to WAV format with 16kHz sample rate, mono, PCM 16-bit
+        // Add -f webm to help ffmpeg recognize the format
+        const ffmpegCmd = fileExt === '.webm' || !fileExt 
+          ? `ffmpeg -f webm -i "${req.file.path}" -ar 16000 -ac 1 -acodec pcm_s16le -f wav "${wavPath}"`
+          : `ffmpeg -i "${req.file.path}" -ar 16000 -ac 1 -acodec pcm_s16le -f wav "${wavPath}"`;
+        console.log('FFmpeg command:', ffmpegCmd);
+        
+        const result = await execAsync(ffmpegCmd);
+        console.log('FFmpeg output:', result.stdout);
+        if (result.stderr) console.log('FFmpeg stderr:', result.stderr);
+        
+        audioFilePath = wavPath;
+        
+        // Check converted file size
+        const stats = fs.statSync(wavPath);
+        console.log(`Converted WAV file size: ${stats.size} bytes`);
+        
+        // Clean up original file
+        fs.unlinkSync(req.file.path);
+      } catch (conversionError) {
+        console.error('Audio conversion failed:', conversionError);
+        throw new Error('Failed to convert audio to WAV format');
+      }
+    }
+    
+    const transcription = await recordingManager.transcribeFile(audioFilePath);
+    
+    // Clean up converted file
+    if (audioFilePath !== req.file.path && fs.existsSync(audioFilePath)) {
+      fs.unlinkSync(audioFilePath);
+    }
+    
     res.json(transcription);
   } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : 'Transcription failed' });
+    res.status(500).json({ error: `Transcription failed: ${error instanceof Error ? error.message : 'Unknown error'}` });
   }
+});
+
+/**
+ * Serve the realtime transcription page
+ */
+app.get('/realtime', (req: Request, res: Response) => {
+  const realtimePath = path.resolve(__dirname, '../../public/realtime.html');
+  console.log('Serving realtime.html from:', realtimePath);
+  if (!fs.existsSync(realtimePath)) {
+    console.error('realtime.html not found at:', realtimePath);
+    return res.status(404).send('Realtime page not found');
+  }
+  res.sendFile(realtimePath);
 });
 
 /**
@@ -130,12 +208,23 @@ app.post('/api/transcribe', upload.single('audio'), async (req: Request, res: Re
  */
 async function startServer() {
   try {
-    await recordingManager.initialize();
-    await recordingManager.loadAllSessions();
-    
+    // Start server immediately for faster page loading
     app.listen(PORT, () => {
       console.log(`Recording AI server running on port ${PORT}`);
       console.log(`Health check: http://localhost:${PORT}/health`);
+      console.log(`Realtime transcription: http://localhost:${PORT}/realtime`);
+      
+      // Initialize recording manager in background
+      recordingManager.initialize()
+        .then(() => recordingManager.loadAllSessions())
+        .then(() => {
+          console.log('Recording manager fully initialized');
+          // Preload Whisper model in background to avoid delays on first request
+          console.log('Preloading Whisper model in background...');
+          return recordingManager.getWhisperService().initialize();
+        })
+        .then(() => console.log('Whisper model preloaded successfully'))
+        .catch(error => console.error('Failed to initialize:', error));
     });
   } catch (error) {
     console.error('Failed to start server:', error);

@@ -53,7 +53,13 @@ async function startCLI() {
             if (recordingManager.isRecording()) {
               console.log('Recording already in progress');
             } else {
-              const session = await recordingManager.startRecording();
+              const config = {
+                sampleRate: 16000,
+                channels: 1,
+                audioType: 'wav' as const
+              };
+              console.log('Starting recording with config:', config);
+              const session = await recordingManager.startRecording(config);
               console.log(`Recording started: ${session.id}`);
             }
             break;

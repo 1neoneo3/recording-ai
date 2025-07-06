@@ -35,8 +35,15 @@ export class RecordingManager {
    * Initialize the recording manager
    */
   async initialize(): Promise<void> {
-    await this.whisperService.initialize();
+    // Skip Whisper initialization here - will be done on first use
     console.log('Recording manager initialized');
+  }
+
+  /**
+   * Get WhisperService instance for preloading
+   */
+  getWhisperService(): WhisperService {
+    return this.whisperService;
   }
 
   /**
@@ -118,8 +125,19 @@ export class RecordingManager {
    * Stop the current recording and optionally transcribe
    */
   async stopRecording(transcribe: boolean = true): Promise<RecordingSession | null> {
+    if (!this.audioRecorder.isRecording()) {
+      console.log('No recording in progress');
+      return null;
+    }
+
+    const currentSession = this.audioRecorder.getCurrentSession();
+    if (!currentSession) {
+      console.log('No current session found');
+      return null;
+    }
+
     const audioFile = await this.audioRecorder.stopRecording();
-    const session = this.audioRecorder.getCurrentSession();
+    const session = this.sessions.get(currentSession.id);
     
     if (!audioFile || !session) {
       return null;
