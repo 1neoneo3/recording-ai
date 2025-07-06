@@ -17,6 +17,28 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
+// Set Content Security Policy to allow eval for Transformers.js
+app.use((req, res, next) => {
+  // More explicit CSP header with all directives
+  const cspHeader = [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net",
+    "style-src 'self' 'unsafe-inline'",
+    "font-src 'self' data: https://cdn.jsdelivr.net",
+    "img-src 'self' data: blob:",
+    "media-src 'self' blob:",
+    "connect-src 'self' https://huggingface.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co",
+    "worker-src 'self' blob:",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'"
+  ].join('; ');
+  
+  res.setHeader('Content-Security-Policy', cspHeader);
+  next();
+});
+
 // Serve static files from public directory with caching
 const publicPath = path.resolve(__dirname, '../../public');
 console.log('Serving static files from:', publicPath);
@@ -211,6 +233,24 @@ app.get('/realtime', (req: Request, res: Response) => {
     console.error('realtime.html not found at:', realtimePath);
     return res.status(404).send('Realtime page not found');
   }
+  
+  // Explicitly set CSP for this route
+  const cspHeader = [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net",
+    "style-src 'self' 'unsafe-inline'",
+    "font-src 'self' data: https://cdn.jsdelivr.net",
+    "img-src 'self' data: blob:",
+    "media-src 'self' blob:",
+    "connect-src 'self' https://huggingface.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co",
+    "worker-src 'self' blob:",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'"
+  ].join('; ');
+  
+  res.setHeader('Content-Security-Policy', cspHeader);
   res.sendFile(realtimePath);
 });
 

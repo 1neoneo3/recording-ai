@@ -242,10 +242,31 @@
             animation: pulse 0.8s infinite;
         }
         
-        #recordingStatus, #speakingStatus {
+        #recordingStatus, #speakingStatus, #queueStatus {
             font-size: 14px;
             color: #666;
             font-weight: 500;
+        }
+        
+        #queueStatus {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .queue-indicator {
+            display: inline-block;
+            padding: 2px 8px;
+            background-color: #f0f0f0;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .queue-indicator.processing {
+            background-color: #333;
+            color: white;
         }
         
         #audioLevel {
@@ -316,8 +337,9 @@
         <div id="status" class="status">
             <div id="recordingStatus">録音停止中</div>
             <div id="speakingStatus"></div>
+            <div id="queueStatus" style="margin-top: 8px;"></div>
             <div id="audioLevel" style="margin-top: 10px;">
-                <label>音声レベル: </label>
+                <label for="volumeMeter">音声レベル: </label>
                 <progress id="volumeMeter" value="0" max="100" style="width: 200px;"></progress>
                 <span id="volumeValue">0</span>
             </div>
@@ -407,7 +429,7 @@
         }
     </script>
     <script src="https://cdn.jsdelivr.net/npm/hark@1.2.3/hark.bundle.js" defer></script>
-    <script>
+    <script type="module">
         let mediaRecorder = null;
         let audioStream = null;
         let speechEvents = null;
@@ -430,6 +452,7 @@
         const statusDiv = document.getElementById('status');
         const recordingStatusDiv = document.getElementById('recordingStatus');
         const speakingStatusDiv = document.getElementById('speakingStatus');
+        const queueStatusDiv = document.getElementById('queueStatus');
         const transcriptionDiv = document.getElementById('transcription');
         const errorDiv = document.getElementById('error');
         
@@ -822,6 +845,9 @@
             
             console.log(`Enqueued segment: ${chunks.length} chunks, blob size: ${audioBlob.size} bytes, queue size: ${processingQueue.length}`);
             
+            // Update queue status
+            updateQueueStatus();
+            
             // Start processing queue if not already processing
             if (!isQueueProcessing) {
                 processQueue();
@@ -833,9 +859,12 @@
             if (isQueueProcessing || processingQueue.length === 0) return;
             
             isQueueProcessing = true;
+            updateQueueStatus();
             
             while (processingQueue.length > 0) {
                 const segment = processingQueue.shift();
+                updateQueueStatus();
+                
                 try {
                     await processSegmentData(segment);
                 } catch (error) {
@@ -845,6 +874,7 @@
             }
             
             isQueueProcessing = false;
+            updateQueueStatus();
         }
         
         // Process individual segment data
@@ -1013,6 +1043,29 @@
                 speakingStatusDiv.innerHTML = '<span class="speaking-indicator"></span>発話検出中';
             } else {
                 speakingStatusDiv.textContent = '';
+            }
+            
+            // Update queue status
+            updateQueueStatus();
+        }
+        
+        function updateQueueStatus() {
+            const queueLength = processingQueue.length;
+            
+            if (queueLength === 0 && !isQueueProcessing) {
+                queueStatusDiv.innerHTML = '';
+            } else {
+                let statusHTML = '';
+                
+                if (isQueueProcessing) {
+                    statusHTML += '<span class="queue-indicator processing">処理中</span>';
+                }
+                
+                if (queueLength > 0) {
+                    statusHTML += `<span class="queue-indicator">待機中: ${queueLength}</span>`;
+                }
+                
+                queueStatusDiv.innerHTML = statusHTML;
             }
         }
         
