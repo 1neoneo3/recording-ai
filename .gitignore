@@ -1,0 +1,94 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+logs/
+*.log
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+.nyc_output/
+
+# Recorded audio files
+data/recordings/*.wav
+data/recordings/*.mp3
+data/recordings/*.m4a
+data/recordings/*.flac
+
+# Uploaded files
+uploads/*
+!uploads/.gitkeep
+
+# Session data (optional - remove if you want to track sessions)
+data/sessions/
+
+# Whisper model cache
+.cache/
+~/.cache/huggingface/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Test files (if any are added back)
+test_*/
+*test*.wav
+*test*.mp3
+
+# Package manager lock files (uncomment the one you don't use)
+# package-lock.json
+# yarn.lock
+
+# Local development files
+local/
+dev/
+
+# Transcription output files (optional - uncomment if you don't want to track them)
+# *.txt
+# transcription_*.txt
+
+# macOS audio related
+.AppleDouble
+.LSOverride
+
+# Backup files
+*.bak
+*.backup
