@@ -139,6 +139,9 @@ app.post('/api/transcribe', upload.single('audio'), async (req: Request, res: Re
       return res.status(400).json({ error: 'No audio file provided' });
     }
     
+    // Get model from request body
+    const model = req.body.model || 'Xenova/whisper-medium';
+    
     // Check if the file needs conversion to WAV
     const fileExt = path.extname(req.file.filename).toLowerCase();
     let audioFilePath = req.file.path;
@@ -151,6 +154,10 @@ app.post('/api/transcribe', upload.single('audio'), async (req: Request, res: Re
       const execAsync = promisify(exec);
       
       try {
+        // Log file size for debugging
+        const fileStats = fs.statSync(req.file.path);
+        console.log(`Input file size: ${fileStats.size} bytes`);
+        
         console.log(`Converting ${fileExt || 'webm'} to WAV: ${req.file.path} -> ${wavPath}`);
         // Convert to WAV format with 16kHz sample rate, mono, PCM 16-bit
         // Add -f webm to help ffmpeg recognize the format
@@ -177,7 +184,7 @@ app.post('/api/transcribe', upload.single('audio'), async (req: Request, res: Re
       }
     }
     
-    const transcription = await recordingManager.transcribeFile(audioFilePath);
+    const transcription = await recordingManager.transcribeFile(audioFilePath, model);
     
     // Clean up converted file
     if (audioFilePath !== req.file.path && fs.existsSync(audioFilePath)) {

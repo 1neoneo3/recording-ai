@@ -9,6 +9,7 @@ export class RecordingManager {
   private whisperService: WhisperService;
   private sessions: Map<string, RecordingSession> = new Map();
   private dataDir: string;
+  private whisperServiceCache: Map<string, WhisperService> = new Map();
 
   constructor(
     dataDir: string = './data',
@@ -18,6 +19,9 @@ export class RecordingManager {
     this.audioRecorder = new AudioRecorder(path.join(dataDir, 'recordings'));
     this.whisperService = new WhisperService(whisperModel);
     this.ensureDataDir();
+    
+    // Add default model to cache
+    this.whisperServiceCache.set(whisperModel, this.whisperService);
     
     // Set callback for auto transcription
     this.audioRecorder.setStopCallback(async (sessionId: string) => {
@@ -171,7 +175,21 @@ export class RecordingManager {
   /**
    * Transcribe an existing audio file
    */
-  async transcribeFile(filePath: string): Promise<TranscriptionResult> {
+  async transcribeFile(filePath: string, modelName?: string): Promise<TranscriptionResult> {
+    // Use the requested model or default
+    const targetModel = modelName || 'Xenova/whisper-medium';
+    let whisperService: WhisperService;
+    
+    // Check if we have this model in cache
+    if (this.whisperServiceCache.has(targetModel)) {
+      whisperService = this.whisperServiceCache.get(targetModel)!;
+    } else {
+      // Create and cache new WhisperService for this model
+      whisperService = new WhisperService(targetModel);
+      await whisperService.initialize();
+      this.whisperServiceCache.set(targetModel, whisperService);
+    }
+    
     const audioFile: AudioFile = {
       path: filePath,
       duration: 0,
@@ -181,7 +199,7 @@ export class RecordingManager {
       channels: 1
     };
 
-    return await this.whisperService.transcribeFile(audioFile);
+    return await whisperService.transcribeFile(audioFile);
   }
 
   /**
