@@ -5,39 +5,51 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>リアルタイム文字起こし</title>
     <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-            background-color: #f5f5f5;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background-color: #fafafa;
+            min-height: 100vh;
         }
         
         .container {
-            background-color: white;
-            border-radius: 8px;
-            padding: 30px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 40px 20px;
         }
         
         h1 {
-            color: #333;
-            margin-bottom: 30px;
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: #1a1a1a;
+            margin-bottom: 48px;
+            text-align: center;
+            letter-spacing: -0.02em;
         }
         
         .controls {
             display: flex;
-            gap: 10px;
-            margin-bottom: 30px;
+            gap: 16px;
+            justify-content: center;
+            margin-bottom: 48px;
         }
         
         button {
-            padding: 10px 20px;
-            font-size: 16px;
+            padding: 12px 32px;
+            font-size: 15px;
+            font-weight: 500;
             border: none;
-            border-radius: 4px;
+            border-radius: 8px;
             cursor: pointer;
-            transition: background-color 0.3s;
+            transition: all 0.2s ease;
+            letter-spacing: 0.02em;
         }
         
         button:disabled {
@@ -46,71 +58,162 @@
         }
         
         #startBtn {
-            background-color: #4CAF50;
+            background-color: #1a1a1a;
             color: white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
         }
         
         #startBtn:hover:not(:disabled) {
-            background-color: #45a049;
+            background-color: #000;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
         }
         
         #stopBtn {
-            background-color: #f44336;
-            color: white;
+            background-color: #e5e5e5;
+            color: #333;
         }
         
         #stopBtn:hover:not(:disabled) {
-            background-color: #da190b;
+            background-color: #d5d5d5;
+            transform: translateY(-1px);
+        }
+        
+        #copyBtn {
+            background-color: transparent;
+            color: #666;
+            border: 1px solid #e5e5e5;
+            padding: 8px 20px;
+            font-size: 14px;
+        }
+        
+        #copyBtn:hover {
+            background-color: #f5f5f5;
+            border-color: #d5d5d5;
+        }
+        
+        #copyBtn:active {
+            background-color: #e5e5e5;
         }
         
         .status {
-            margin-bottom: 20px;
-            padding: 10px;
-            border-radius: 4px;
-            background-color: #e3f2fd;
+            background-color: white;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 32px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+            border: 1px solid #f0f0f0;
         }
         
         .status.recording {
-            background-color: #ffebee;
+            border-color: #333;
         }
         
         .status.speaking {
-            background-color: #e8f5e9;
+            border-color: #666;
+        }
+        
+        .model-selector {
+            background-color: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 32px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+            border: 1px solid #f0f0f0;
+            text-align: center;
+        }
+        
+        .model-selector label {
+            font-size: 14px;
+            color: #666;
+            font-weight: 500;
+            margin-right: 12px;
+        }
+        
+        .model-selector select {
+            padding: 10px 16px;
+            font-size: 14px;
+            border-radius: 8px;
+            border: 1px solid #e5e5e5;
+            background-color: white;
+            cursor: pointer;
+            min-width: 250px;
+            transition: border-color 0.2s ease;
+        }
+        
+        .model-selector select:hover {
+            border-color: #ccc;
+        }
+        
+        .model-selector select:focus {
+            outline: none;
+            border-color: #333;
         }
         
         .transcription-container {
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            padding: 20px;
-            min-height: 300px;
-            max-height: 500px;
+            background-color: white;
+            border-radius: 12px;
+            padding: 32px;
+            min-height: 400px;
+            max-height: 600px;
             overflow-y: auto;
-            background-color: #fafafa;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+            border: 1px solid #f0f0f0;
         }
         
         .transcription-segment {
-            margin-bottom: 15px;
-            padding: 10px;
-            background-color: white;
-            border-radius: 4px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            margin-bottom: 24px;
+            padding-bottom: 24px;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        
+        .transcription-segment:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
         }
         
         .timestamp {
             font-size: 12px;
-            color: #666;
-            margin-bottom: 5px;
+            color: #999;
+            margin-bottom: 8px;
+            font-weight: 400;
         }
         
         .text {
             font-size: 16px;
-            line-height: 1.5;
+            line-height: 1.8;
             color: #333;
+            font-weight: 400;
         }
         
         .error {
-            color: #f44336;
-            margin-top: 10px;
+            color: #666;
+            font-size: 14px;
+            padding: 16px;
+            background-color: #f5f5f5;
+            border-radius: 8px;
+            margin-bottom: 24px;
+            text-align: center;
+            display: none;
+        }
+        
+        .error:not(:empty) {
+            display: block;
+        }
+        
+        .results-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 24px;
+        }
+        
+        .results-header h2 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: #1a1a1a;
+            margin: 0;
         }
         
         @keyframes pulse {
@@ -121,22 +224,70 @@
         
         .recording-indicator {
             display: inline-block;
-            width: 10px;
-            height: 10px;
-            background-color: #f44336;
+            width: 8px;
+            height: 8px;
+            background-color: #333;
             border-radius: 50%;
-            margin-right: 10px;
+            margin-right: 8px;
             animation: pulse 1.5s infinite;
         }
         
         .speaking-indicator {
             display: inline-block;
-            width: 10px;
-            height: 10px;
-            background-color: #4CAF50;
+            width: 8px;
+            height: 8px;
+            background-color: #666;
             border-radius: 50%;
-            margin-right: 10px;
+            margin-right: 8px;
             animation: pulse 0.8s infinite;
+        }
+        
+        #recordingStatus, #speakingStatus {
+            font-size: 14px;
+            color: #666;
+            font-weight: 500;
+        }
+        
+        #audioLevel {
+            margin-top: 16px;
+        }
+        
+        #audioLevel label {
+            font-size: 14px;
+            color: #666;
+            margin-right: 8px;
+        }
+        
+        #volumeMeter {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 200px;
+            height: 6px;
+            background: #f0f0f0;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        
+        #volumeMeter::-webkit-progress-bar {
+            background-color: #f0f0f0;
+            border-radius: 3px;
+        }
+        
+        #volumeMeter::-webkit-progress-value {
+            background-color: #333;
+            border-radius: 3px;
+        }
+        
+        #volumeMeter::-moz-progress-bar {
+            background-color: #333;
+            border-radius: 3px;
+        }
+        
+        #volumeValue {
+            font-size: 14px;
+            color: #666;
+            margin-left: 8px;
+            font-variant-numeric: tabular-nums;
         }
     </style>
 </head>
@@ -147,16 +298,18 @@
         <div class="controls">
             <button id="startBtn">録音開始</button>
             <button id="stopBtn" disabled>録音停止</button>
-            <button id="transcribeBtn" disabled>手動文字起こし</button>
         </div>
         
-        <div style="margin: 20px 0;">
-            <label for="modelSelect">Whisperモデル: </label>
-            <select id="modelSelect" style="padding: 8px; font-size: 14px; border-radius: 4px; border: 1px solid #ddd;">
+        <div class="model-selector">
+            <label for="modelSelect">Whisperモデル</label>
+            <select id="modelSelect">
                 <option value="Xenova/whisper-tiny">Tiny (最速・低精度)</option>
                 <option value="Xenova/whisper-base">Base (高速・標準精度)</option>
                 <option value="Xenova/whisper-small">Small (標準速度・良好精度)</option>
                 <option value="Xenova/whisper-medium" selected>Medium (やや遅い・高精度)</option>
+                <option value="Xenova/whisper-large-v3">Large v3 (遅い・最高精度)</option>
+                <option value="openai/whisper-turbo">🚀 Turbo (Python版・超高速)</option>
+                <option value="openai/whisper-large-v3">🐍 Large v3 (Python版・最高精度)</option>
             </select>
         </div>
         
@@ -172,9 +325,12 @@
         
         <div id="error" class="error"></div>
         
-        <h2>文字起こし結果</h2>
+        <div class="results-header">
+            <h2>文字起こし結果</h2>
+            <button id="copyBtn">全文をコピー</button>
+        </div>
         <div id="transcription" class="transcription-container">
-            <p style="color: #999;">録音を開始すると、ここに文字起こし結果が表示されます。</p>
+            <p style="color: #999; text-align: center; font-size: 14px;">録音を開始すると、ここに文字起こし結果が表示されます。</p>
         </div>
     </div>
 
@@ -271,7 +427,6 @@
         
         const startBtn = document.getElementById('startBtn');
         const stopBtn = document.getElementById('stopBtn');
-        const transcribeBtn = document.getElementById('transcribeBtn');
         const statusDiv = document.getElementById('status');
         const recordingStatusDiv = document.getElementById('recordingStatus');
         const speakingStatusDiv = document.getElementById('speakingStatus');
@@ -428,7 +583,6 @@
                 // Update UI
                 startBtn.disabled = true;
                 stopBtn.disabled = false;
-                transcribeBtn.disabled = false;
                 updateStatus();
                 
                 console.log('Recording started');
@@ -613,7 +767,6 @@
             // Update UI
             startBtn.disabled = false;
             stopBtn.disabled = true;
-            transcribeBtn.disabled = true;
             updateStatus();
             
             console.log('Recording stopped');
@@ -882,15 +1035,53 @@
             throw new Error('No supported audio MIME type found');
         }
         
+        // Copy all transcription text function
+        function copyAllTranscriptions() {
+            const copyBtn = document.getElementById('copyBtn');
+            const transcriptionSegments = transcriptionDiv.querySelectorAll('.transcription-segment .text');
+            
+            if (transcriptionSegments.length === 0) {
+                copyBtn.textContent = 'コピーする内容がありません';
+                setTimeout(() => {
+                    copyBtn.textContent = '全文をコピー';
+                }, 2000);
+                return;
+            }
+            
+            // Collect all text from transcription segments (excluding timestamps)
+            const allText = Array.from(transcriptionSegments)
+                .map(segment => segment.textContent.trim())
+                .filter(text => text && text !== '処理中...')
+                .join('\n');
+            
+            // Copy to clipboard
+            navigator.clipboard.writeText(allText).then(() => {
+                // Show success feedback
+                const originalText = copyBtn.textContent;
+                copyBtn.textContent = 'コピーしました！';
+                copyBtn.style.backgroundColor = '#333';
+                copyBtn.style.color = 'white';
+                copyBtn.style.borderColor = '#333';
+                
+                setTimeout(() => {
+                    copyBtn.textContent = originalText;
+                    copyBtn.style.backgroundColor = 'transparent';
+                    copyBtn.style.color = '#666';
+                    copyBtn.style.borderColor = '#e5e5e5';
+                }, 2000);
+            }).catch(err => {
+                console.error('Failed to copy text:', err);
+                copyBtn.textContent = 'コピーに失敗しました';
+                setTimeout(() => {
+                    copyBtn.textContent = '全文をコピー';
+                }, 2000);
+            });
+        }
+        
         // Initialize event listeners after all functions are defined
         startBtn.addEventListener('click', startRecording);
         stopBtn.addEventListener('click', stopRecording);
-        transcribeBtn.addEventListener('click', () => {
-            if (audioChunks.length > 0) {
-                console.log('Manual transcribe triggered');
-                processSegment();
-            }
-        });
+        document.getElementById('copyBtn').addEventListener('click', copyAllTranscriptions);
     </script>
 </body>
 </html>

@@ -1,5 +1,6 @@
 import { AudioRecorder } from './AudioRecorder.js';
 import { WhisperService } from './WhisperService.js';
+import { WhisperPythonService } from './WhisperPythonService.js';
 import { RecordingSession, RecordingConfig, TranscriptionResult, AudioFile } from '../types/index.js';
 import fs from 'fs';
 import path from 'path';
@@ -7,6 +8,7 @@ import path from 'path';
 export class RecordingManager {
   private audioRecorder: AudioRecorder;
   private whisperService: WhisperService;
+  private whisperPythonService: WhisperPythonService;
   private sessions: Map<string, RecordingSession> = new Map();
   private dataDir: string;
   private whisperServiceCache: Map<string, WhisperService> = new Map();
@@ -18,6 +20,7 @@ export class RecordingManager {
     this.dataDir = dataDir;
     this.audioRecorder = new AudioRecorder(path.join(dataDir, 'recordings'));
     this.whisperService = new WhisperService(whisperModel);
+    this.whisperPythonService = new WhisperPythonService(path.join(dataDir, 'transcriptions'));
     this.ensureDataDir();
     
     // Add default model to cache
@@ -41,6 +44,19 @@ export class RecordingManager {
   async initialize(): Promise<void> {
     // Skip Whisper initialization here - will be done on first use
     console.log('Recording manager initialized');
+  }
+  
+  /**
+   * Preload default Whisper model
+   */
+  async preloadDefaultModel(): Promise<void> {
+    try {
+      console.log('Preloading default Whisper model...');
+      await this.whisperService.initialize();
+      console.log('Default Whisper model preloaded');
+    } catch (error) {
+      console.error('Failed to preload default model:', error);
+    }
   }
 
   /**
@@ -178,6 +194,38 @@ export class RecordingManager {
   async transcribeFile(filePath: string, modelName?: string): Promise<TranscriptionResult> {
     // Use the requested model or default
     const targetModel = modelName || 'Xenova/whisper-medium';
+    
+    // Check if this is a Python Whisper model
+    if (targetModel.startsWith('openai/')) {
+      // Check if Python Whisper is available before trying to use it
+      const deps = await this.whisperPythonService.checkDependencies();
+      if (!deps.python || !deps.whisper) {
+        console.log('Python Whisper not available, using default JavaScript model');
+        const audioFile: AudioFile = {
+          path: filePath,
+          duration: 0,
+          size: fs.statSync(filePath).size,
+          format: path.extname(filePath).toLowerCase().substring(1),
+          sampleRate: 16000,
+          channels: 1
+        };
+        return await this.whisperService.transcribeFile(audioFile);
+      }
+      
+      // Extract model name (e.g., 'openai/whisper-turbo' -> 'turbo')
+      const pythonModel = targetModel.replace('openai/whisper-', '');
+      console.log(`Using Python Whisper model: ${pythonModel}`);
+      
+      try {
+        return await this.whisperPythonService.transcribeFile(filePath, pythonModel);
+      } catch (error) {
+        console.error('Python Whisper failed:', error);
+        // Don't fallback, just throw the error
+        throw error;
+      }
+    }
+    
+    // Use JavaScript/ONNX model
     let whisperService: WhisperService;
     
     // Check if we have this model in cache

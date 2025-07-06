@@ -17,10 +17,14 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
-// Serve static files from public directory
+// Serve static files from public directory with caching
 const publicPath = path.resolve(__dirname, '../../public');
 console.log('Serving static files from:', publicPath);
-app.use(express.static(publicPath));
+app.use(express.static(publicPath, {
+  maxAge: '1h', // Cache static files for 1 hour
+  etag: true,
+  lastModified: true
+}));
 
 // File upload configuration
 const storage = multer.diskStorage({
@@ -202,7 +206,7 @@ app.post('/api/transcribe', upload.single('audio'), async (req: Request, res: Re
  */
 app.get('/realtime', (req: Request, res: Response) => {
   const realtimePath = path.resolve(__dirname, '../../public/realtime.html');
-  console.log('Serving realtime.html from:', realtimePath);
+  // Remove excessive logging
   if (!fs.existsSync(realtimePath)) {
     console.error('realtime.html not found at:', realtimePath);
     return res.status(404).send('Realtime page not found');
@@ -226,11 +230,9 @@ async function startServer() {
         .then(() => recordingManager.loadAllSessions())
         .then(() => {
           console.log('Recording manager fully initialized');
-          // Preload Whisper model in background to avoid delays on first request
-          console.log('Preloading Whisper model in background...');
-          return recordingManager.getWhisperService().initialize();
+          // Preload default Whisper model in background
+          return recordingManager.preloadDefaultModel();
         })
-        .then(() => console.log('Whisper model preloaded successfully'))
         .catch(error => console.error('Failed to initialize:', error));
     });
   } catch (error) {
