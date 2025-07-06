@@ -12,12 +12,17 @@ export class RecordingManager {
 
   constructor(
     dataDir: string = './data',
-    whisperModel: string = 'Xenova/whisper-base'
+    whisperModel: string = 'Xenova/whisper-medium'
   ) {
     this.dataDir = dataDir;
     this.audioRecorder = new AudioRecorder(path.join(dataDir, 'recordings'));
     this.whisperService = new WhisperService(whisperModel);
     this.ensureDataDir();
+    
+    // Set callback for auto transcription
+    this.audioRecorder.setStopCallback(async (sessionId: string) => {
+      await this.autoTranscribe(sessionId);
+    });
   }
 
   private ensureDataDir(): void {
@@ -35,12 +40,78 @@ export class RecordingManager {
   }
 
   /**
+   * Auto transcribe after recording stops
+   */
+  private async autoTranscribe(sessionId: string): Promise<void> {
+    console.log(`Auto transcribing session: ${sessionId}`);
+    
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.audioFile) {
+      console.error('Session or audio file not found for auto transcription');
+      return;
+    }
+
+    try {
+      session.status = 'processing';
+      this.sessions.set(sessionId, session);
+
+      const transcription = await this.whisperService.transcribeFile(session.audioFile);
+      session.transcription = transcription;
+      session.status = 'completed';
+      
+      console.log(`Auto transcription completed for session: ${sessionId}`);
+    } catch (error) {
+      console.error('Auto transcription failed:', error);
+      session.status = 'error';
+    }
+
+    this.sessions.set(sessionId, session);
+    await this.saveSession(session);
+  }
+
+  /**
    * Start a new recording session
    */
   async startRecording(config?: RecordingConfig): Promise<RecordingSession> {
     const session = await this.audioRecorder.startRecording(config);
     this.sessions.set(session.id, session);
+    
+    // Update session with audio file after recording stops
+    setTimeout(() => {
+      const currentSession = this.audioRecorder.getCurrentSession();
+      if (currentSession && currentSession.id === session.id) {
+        // Recording is still in progress, wait for auto-stop
+        return;
+      }
+      
+      // Recording stopped manually, update session
+      this.updateSessionAfterStop(session.id);
+    }, 1000);
+    
     return session;
+  }
+
+  /**
+   * Update session after recording stops
+   */
+  private async updateSessionAfterStop(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    const audioFilePath = path.join(this.dataDir, 'recordings', `${sessionId}.wav`);
+    if (fs.existsSync(audioFilePath)) {
+      const stats = fs.statSync(audioFilePath);
+      session.audioFile = {
+        path: audioFilePath,
+        duration: 0,
+        size: stats.size,
+        format: 'wav',
+        sampleRate: 16000,
+        channels: 1
+      };
+      session.endTime = new Date();
+      this.sessions.set(sessionId, session);
+    }
   }
 
   /**

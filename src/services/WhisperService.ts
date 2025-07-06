@@ -1,5 +1,6 @@
 import { pipeline } from '@xenova/transformers';
 import fs from 'fs';
+import path from 'path';
 import pkg from 'wavefile';
 const { WaveFile } = pkg;
 import { TranscriptionResult, AudioFile } from '../types/index.js';
@@ -7,8 +8,21 @@ import { TranscriptionResult, AudioFile } from '../types/index.js';
 export class WhisperService {
   private transcriber: any = null;
   private modelLoaded = false;
+  private outputDir: string;
 
-  constructor(private modelName: string = 'Xenova/whisper-base') {}
+  constructor(private modelName: string = 'Xenova/whisper-medium', outputDir: string = './data/transcriptions') {
+    this.outputDir = outputDir;
+    this.ensureOutputDir();
+  }
+
+  /**
+   * Ensure output directory exists
+   */
+  private ensureOutputDir(): void {
+    if (!fs.existsSync(this.outputDir)) {
+      fs.mkdirSync(this.outputDir, { recursive: true });
+    }
+  }
 
   /**
    * Initialize Whisper model
@@ -80,6 +94,10 @@ export class WhisperService {
       }
 
       console.log('Transcription completed:', result.text);
+      
+      // Save transcription to text file
+      await this.saveTranscriptionToFile(audioFile.path, transcriptionResult);
+      
       return transcriptionResult;
     } catch (error) {
       console.error('Transcription error:', error);
@@ -121,6 +139,43 @@ export class WhisperService {
       'Xenova/whisper-large-v2',
       'Xenova/whisper-large-v3'
     ];
+  }
+
+  /**
+   * Save transcription result to text file
+   */
+  private async saveTranscriptionToFile(audioFilePath: string, result: TranscriptionResult): Promise<string> {
+    try {
+      const audioFileName = path.basename(audioFilePath, path.extname(audioFilePath));
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const textFileName = `${audioFileName}_${timestamp}.txt`;
+      const textFilePath = path.join(this.outputDir, textFileName);
+
+      let content = `Transcription Result\n`;
+      content += `==================\n`;
+      content += `Audio File: ${audioFilePath}\n`;
+      content += `Timestamp: ${new Date().toISOString()}\n`;
+      content += `Language: ${result.language}\n`;
+      content += `Confidence: ${result.confidence}\n`;
+      content += `\nTranscription:\n`;
+      content += `${result.text}\n`;
+
+      if (result.segments && result.segments.length > 0) {
+        content += `\nSegments:\n`;
+        content += `=========\n`;
+        result.segments.forEach((segment, index) => {
+          content += `[${segment.start.toFixed(2)}s - ${segment.end.toFixed(2)}s] ${segment.text}\n`;
+        });
+      }
+
+      await fs.promises.writeFile(textFilePath, content, 'utf8');
+      console.log(`Transcription saved to: ${textFilePath}`);
+      
+      return textFilePath;
+    } catch (error) {
+      console.error('Failed to save transcription file:', error);
+      throw error;
+    }
   }
 
   /**

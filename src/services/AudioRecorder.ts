@@ -7,10 +7,15 @@ export class AudioRecorder {
   private recordingProcess: ChildProcess | null = null;
   private currentSession: RecordingSession | null = null;
   private outputDir: string;
+  private onStopCallback?: (sessionId: string) => Promise<void>;
 
   constructor(outputDir: string = './recordings') {
     this.outputDir = outputDir;
     this.ensureOutputDir();
+  }
+
+  setStopCallback(callback: (sessionId: string) => Promise<void>) {
+    this.onStopCallback = callback;
   }
 
   private ensureOutputDir(): void {
@@ -52,13 +57,20 @@ export class AudioRecorder {
     // Use ffmpeg to record from default audio device (BlackHole)
     const ffmpegArgs = [
       '-f', 'avfoundation',
-      '-i', ':0', // Use default audio device
+      '-i', ':1', // Use MacBook Air microphone
       '-ar', config.sampleRate.toString(),
       '-ac', config.channels.toString(),
       '-c:a', 'pcm_s16le',
-      '-y', // Overwrite output file
-      outputPath
+      '-filter:a', 'volume=10', // Increase volume by 10x
+      '-y' // Overwrite output file
     ];
+
+    // Add duration if specified
+    if (config.duration) {
+      ffmpegArgs.push('-t', config.duration.toString());
+    }
+
+    ffmpegArgs.push(outputPath);
 
     this.recordingProcess = spawn('ffmpeg', ffmpegArgs, {
       stdio: ['pipe', 'pipe', 'pipe']
@@ -70,6 +82,20 @@ export class AudioRecorder {
         this.currentSession.status = 'error';
       }
     });
+
+    // Auto-stop recording if duration is specified
+    if (config.duration) {
+      setTimeout(async () => {
+        if (this.recordingProcess && this.currentSession) {
+          const sessionId = this.currentSession.id;
+          await this.stopRecording();
+          // Call callback for auto transcription
+          if (this.onStopCallback) {
+            await this.onStopCallback(sessionId);
+          }
+        }
+      }, config.duration * 1000);
+    }
 
     console.log(`Recording started: ${sessionId}`);
     return this.currentSession;

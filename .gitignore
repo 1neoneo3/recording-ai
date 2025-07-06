@@ -81,6 +81,9 @@ test_*/
 local/
 dev/
 
+# Transcription output files
+data/transcriptions/*.txt
+
 # Transcription output files (optional - uncomment if you don't want to track them)
 # *.txt
 # transcription_*.txt
