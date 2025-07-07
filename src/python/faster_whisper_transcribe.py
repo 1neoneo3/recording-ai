@@ -79,16 +79,34 @@ def transcribe_audio(audio_path, model_name="base", device="auto", compute_type=
         # Transcribe
         print(f"Starting transcription of {audio_path}", file=sys.stderr)
         start_time = time.time()
-        segments, info = model.transcribe(
-            audio_path,
-            beam_size=1,  # Reduced for faster processing
-            language="ja",  # Japanese
-            vad_filter=True,  # Enable VAD filter for better accuracy
-            vad_parameters=dict(
-                min_silence_duration_ms=500,
-                speech_pad_ms=400
+        
+        # Use same parameters for both large-v2 and large-v3 models
+        if model_name in ["large-v2", "large-v3"]:
+            segments, info = model.transcribe(
+                audio_path,
+                beam_size=5,  # Increased for better accuracy
+                language="ja",  # Japanese
+                vad_filter=True,  # Enable VAD filter for better accuracy
+                vad_parameters=dict(
+                    min_silence_duration_ms=1000,  # Increased to avoid cutting off speech
+                    speech_pad_ms=600,  # Increased padding to capture speech boundaries
+                    threshold=0.3  # Lower threshold to be more sensitive to speech
+                ),
+                word_timestamps=True,  # Enable word-level timestamps for better segmentation
+                condition_on_previous_text=True,  # Use context from previous segments
+                temperature=0.0,  # Reduce randomness for more consistent results
+                compression_ratio_threshold=2.4,  # Default threshold
+                log_prob_threshold=-1.0  # Default threshold
             )
-        )
+        else:
+            # Use default parameters for other models
+            segments, info = model.transcribe(
+                audio_path,
+                language="ja",  # Japanese
+                vad_filter=True,
+                word_timestamps=False,
+                condition_on_previous_text=False
+            )
         print(f"Transcription completed in {time.time() - start_time:.2f} seconds", file=sys.stderr)
         
         # Collect transcription text
