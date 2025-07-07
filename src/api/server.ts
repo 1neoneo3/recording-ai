@@ -212,13 +212,32 @@ app.post('/api/transcribe', upload.single('audio'), async (req: Request, res: Re
     
     const transcription = await recordingManager.transcribeFile(audioFilePath, model);
     
-    // Clean up converted file
+    // Clean up audio files after successful transcription
     if (audioFilePath !== req.file.path && fs.existsSync(audioFilePath)) {
+      // Delete converted WAV file
       fs.unlinkSync(audioFilePath);
+      console.log(`Deleted converted audio file: ${audioFilePath}`);
+    } else if (fs.existsSync(req.file.path)) {
+      // Delete original file if it wasn't already deleted
+      fs.unlinkSync(req.file.path);
+      console.log(`Deleted original audio file: ${req.file.path}`);
     }
     
     res.json(transcription);
   } catch (error) {
+    // Clean up files on error
+    try {
+      if (req.file && fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
+      // Also try to clean up any converted WAV file
+      if (audioFilePath && audioFilePath !== req.file.path && fs.existsSync(audioFilePath)) {
+        fs.unlinkSync(audioFilePath);
+      }
+    } catch (cleanupError) {
+      console.error('Failed to clean up files after error:', cleanupError);
+    }
+    
     res.status(500).json({ error: `Transcription failed: ${error instanceof Error ? error.message : 'Unknown error'}` });
   }
 });

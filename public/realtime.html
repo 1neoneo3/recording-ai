@@ -457,6 +457,11 @@
         const MAX_CONCURRENT_REQUESTS = 1; // Limit concurrent requests
         // const MAX_QUEUE_SIZE = 4; // Maximum queue size (disabled - no limit)
         
+        // Auto-stop on silence
+        let lastSoundTime = Date.now(); // Track last time sound was detected
+        let silenceCheckInterval = null; // Interval for checking silence duration
+        const SILENCE_AUTO_STOP_DURATION = 5 * 60 * 1000; // 5 minutes in milliseconds
+        
         // State persistence constants
         const STATE_KEY = 'recording_ai_state';
         const TRANSCRIPTION_KEY = 'recording_ai_transcriptions';
@@ -695,6 +700,11 @@
                         chunkCounter++;
                         console.log(`Audio chunk received #${chunkCounter}, size: ${event.data.size}, total chunks: ${audioChunks.length}`);
                         
+                        // Update last sound time when receiving audio data
+                        if (event.data.size > 1000) { // Only count chunks with meaningful audio
+                            lastSoundTime = Date.now();
+                        }
+                        
                         // Process every 3 chunks (approximately 6 seconds with 2-second chunks)
                         if (chunkCounter >= 3) {
                             console.log('Processing 3 chunks automatically');
@@ -729,6 +739,9 @@
                 speechEvents.on('speaking', () => {
                     console.log('Speaking started');
                     isSpeaking = true;
+                    
+                    // Update last sound time
+                    lastSoundTime = Date.now();
                     
                     // Record when speaking started if not already tracking
                     if (!speakingStartAt) {
@@ -798,6 +811,37 @@
                 
                 // Save state after starting recording
                 saveState();
+                
+                // Start silence check interval
+                lastSoundTime = Date.now(); // Initialize last sound time
+                silenceCheckInterval = setInterval(() => {
+                    const silenceDuration = Date.now() - lastSoundTime;
+                    if (silenceDuration >= SILENCE_AUTO_STOP_DURATION) {
+                        console.log(`Auto-stopping recording after ${SILENCE_AUTO_STOP_DURATION / 1000 / 60} minutes of silence`);
+                        stopRecording();
+                        
+                        // Show notification to user
+                        const notification = document.createElement('div');
+                        notification.style.cssText = `
+                            position: fixed;
+                            top: 20px;
+                            right: 20px;
+                            background: #ff9800;
+                            color: white;
+                            padding: 16px 24px;
+                            border-radius: 8px;
+                            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                            z-index: 1000;
+                            font-weight: 500;
+                        `;
+                        notification.textContent = '5分間無音が続いたため、録音を自動停止しました';
+                        document.body.appendChild(notification);
+                        
+                        setTimeout(() => {
+                            notification.remove();
+                        }, 5000);
+                    }
+                }, 10000); // Check every 10 seconds
                 
                 // Disable periodic processing - rely on VAD only
                 // periodicInterval = setInterval(() => {
@@ -907,6 +951,11 @@
                                 chunkCounter++;
                                 console.log(`Audio chunk received #${chunkCounter}, size: ${event.data.size}, total chunks: ${audioChunks.length}`);
                                 
+                                // Update last sound time when receiving audio data
+                                if (event.data.size > 1000) { // Only count chunks with meaningful audio
+                                    lastSoundTime = Date.now();
+                                }
+                                
                                 // Process every 3 chunks (approximately 6 seconds with 2-second chunks)
                                 if (chunkCounter >= 3) {
                                     console.log('Processing 3 chunks automatically');
@@ -963,6 +1012,12 @@
             if (silenceTimeout) {
                 clearTimeout(silenceTimeout);
                 silenceTimeout = null;
+            }
+            
+            // Clear silence check interval
+            if (silenceCheckInterval) {
+                clearInterval(silenceCheckInterval);
+                silenceCheckInterval = null;
             }
             
             // Clear periodic interval
