@@ -166,12 +166,40 @@
             margin-bottom: 24px;
             padding-bottom: 24px;
             border-bottom: 1px solid #f0f0f0;
+            position: relative;
+            padding-right: 40px;
         }
         
         .transcription-segment:last-child {
             border-bottom: none;
             margin-bottom: 0;
             padding-bottom: 0;
+        }
+        
+        .transcription-segment.deleted {
+            display: none;
+        }
+        
+        .delete-btn {
+            position: absolute;
+            top: 0;
+            right: 0;
+            background: none;
+            border: none;
+            padding: 8px;
+            cursor: pointer;
+            color: #999;
+            font-size: 16px;
+            transition: color 0.2s ease;
+            opacity: 0;
+        }
+        
+        .transcription-segment:hover .delete-btn {
+            opacity: 1;
+        }
+        
+        .delete-btn:hover {
+            color: #ff4444;
         }
         
         .timestamp {
@@ -339,6 +367,14 @@
                 <option value="faster-whisper/large-v2">⚡ Faster Large v2 (標準速度・最高精度)</option>
                 <option value="faster-whisper/large-v3">⚡ Faster Large v3 (標準速度・最新モデル)</option>
             </select>
+            
+            <label for="concurrencySelect" style="margin-left: 20px;">並列処理数</label>
+            <select id="concurrencySelect">
+                <option value="1">1 (安定)</option>
+                <option value="2" selected>2 (標準)</option>
+                <option value="3">3 (高速)</option>
+                <option value="4">4 (超高速)</option>
+            </select>
         </div>
         
         <div id="status" class="status">
@@ -449,12 +485,12 @@
         let isProcessing = false; // Flag to prevent concurrent processing
         let periodicInterval = null; // Interval for periodic processing
         let speakingStartAt = null; // Track when speaking started
-        const SPEAKING_THRESHOLD = 0; // 即時処理（最小音声長なし）
+        const SPEAKING_THRESHOLD = 1000; // 1秒の発話で処理開始（バランス調整）
         let currentMimeType = null; // Store current mime type
         const processingQueue = []; // Queue for audio segments to process
         let isQueueProcessing = false; // Flag for queue processing
         let concurrentRequests = 0; // Track concurrent API requests
-        const MAX_CONCURRENT_REQUESTS = 1; // Limit concurrent requests
+        let MAX_CONCURRENT_REQUESTS = 2; // Limit concurrent requests (now variable) - デフォルトを2に変更
         // const MAX_QUEUE_SIZE = 4; // Maximum queue size (disabled - no limit)
         
         // Auto-stop on silence
@@ -467,6 +503,10 @@
         const TRANSCRIPTION_KEY = 'recording_ai_transcriptions';
         const QUEUE_KEY = 'recording_ai_queue';
         const STATE_VERSION = '1.1';
+        
+        // Transcription segments with ordering
+        const transcriptionSegments = new Map(); // Map<segmentId, {timestamp, text, order}>
+        let segmentCounter = 0; // Global counter for segment ordering
         
         const startBtn = document.getElementById('startBtn');
         const stopBtn = document.getElementById('stopBtn');
@@ -489,6 +529,7 @@
                 version: STATE_VERSION,
                 isRecording: isRecording,
                 selectedModel: document.getElementById('modelSelect').value,
+                concurrency: document.getElementById('concurrencySelect').value,
                 timestamp: new Date().toISOString()
             };
             
@@ -520,7 +561,8 @@
         }
         
         function saveTranscriptions() {
-            const transcriptionSegments = transcriptionDiv.querySelectorAll('.transcription-segment');
+            // Only save non-deleted segments
+            const transcriptionSegments = transcriptionDiv.querySelectorAll('.transcription-segment:not(.deleted)');
             const transcriptions = [];
             
             transcriptionSegments.forEach(segment => {
@@ -557,9 +599,11 @@
                 }
                 
                 // Restore transcriptions
-                transcriptions.forEach(({ timestamp, text }) => {
+                transcriptions.forEach(({ timestamp, text }, index) => {
+                    const segmentId = ++segmentCounter;
                     const segment = document.createElement('div');
                     segment.className = 'transcription-segment';
+                    segment.setAttribute('data-segment-id', segmentId);
                     
                     const timestampDiv = document.createElement('div');
                     timestampDiv.className = 'timestamp';
@@ -569,9 +613,25 @@
                     textDiv.className = 'text';
                     textDiv.textContent = text;
                     
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.className = 'delete-btn';
+                    deleteBtn.innerHTML = '🗑️';
+                    deleteBtn.title = '削除';
+                    deleteBtn.onclick = function() {
+                        deleteTranscriptionSegment(segmentId);
+                    };
+                    
                     segment.appendChild(timestampDiv);
                     segment.appendChild(textDiv);
+                    segment.appendChild(deleteBtn);
                     transcriptionDiv.appendChild(segment);
+                    
+                    // Add to transcriptionSegments map
+                    transcriptionSegments.set(segmentId, {
+                        timestamp: timestamp,
+                        text: text,
+                        order: segmentId
+                    });
                 });
                 
                 // Scroll to bottom
@@ -596,10 +656,12 @@
             try {
                 // Convert queue items to serializable format
                 const queueData = processingQueue.map(item => ({
+                    id: item.id,
                     timestamp: item.timestamp.toISOString(),
                     chunkCount: item.chunkCount,
                     blobSize: item.blob.size,
-                    blobType: item.blob.type
+                    blobType: item.blob.type,
+                    order: item.order
                 }));
                 
                 localStorage.setItem(QUEUE_KEY, JSON.stringify({
@@ -644,6 +706,11 @@
                     
                     // Remove message after 5 seconds
                     setTimeout(() => lostItemsMsg.remove(), 5000);
+                    
+                    // Restore segment counter to maintain order
+                    const maxOrder = Math.max(...queueData.queue.map(item => item.order || 0), segmentCounter);
+                    segmentCounter = maxOrder;
+                    console.log(`Restored segment counter to: ${segmentCounter}`);
                 }
                 
                 // Clear the saved queue since we can't restore it
@@ -705,9 +772,9 @@
                             lastSoundTime = Date.now();
                         }
                         
-                        // Process every 3 chunks (approximately 6 seconds with 2-second chunks)
-                        if (chunkCounter >= 3) {
-                            console.log('Processing 3 chunks automatically');
+                        // Process every 2 chunks (approximately 4 seconds with 2-second chunks) for faster response
+                        if (chunkCounter >= 2) {
+                            console.log('Processing 2 chunks automatically');
                             // Need to stop and restart recorder for complete WebM file
                             restartRecorderForChunks();
                         }
@@ -783,8 +850,11 @@
                     // Process the segment by restarting recorder
                     console.log('Speaking duration threshold met, processing segment');
                     
-                    // Restart recorder to create complete WebM file
-                    restartRecorderForChunks();
+                    // Only restart if we have meaningful audio chunks
+                    if (audioChunks.length > 0) {
+                        // Restart recorder to create complete WebM file
+                        restartRecorderForChunks();
+                    }
                 });
                 
                 // Start recording with 2 second chunks for better stability
@@ -956,9 +1026,9 @@
                                     lastSoundTime = Date.now();
                                 }
                                 
-                                // Process every 3 chunks (approximately 6 seconds with 2-second chunks)
-                                if (chunkCounter >= 3) {
-                                    console.log('Processing 3 chunks automatically');
+                                // Process every 2 chunks (approximately 4 seconds with 2-second chunks) for faster response
+                                if (chunkCounter >= 2) {
+                                    console.log('Processing 2 chunks automatically');
                                     restartRecorderForChunks();
                                 }
                             }
@@ -1084,10 +1154,14 @@
             // Log blob details for debugging
             console.log(`Audio blob details: size=${audioBlob.size}, type=${audioBlob.type}, chunks=${chunks.length}`);
             
+            const segmentId = ++segmentCounter; // Increment and get new segment ID
+            
             processingQueue.push({
+                id: segmentId,
                 blob: audioBlob,
                 timestamp: timestamp || new Date(),
-                chunkCount: chunks.length
+                chunkCount: chunks.length,
+                order: segmentId // Use segmentId as order
             });
             
             console.log(`Enqueued segment: ${chunks.length} chunks, blob size: ${audioBlob.size} bytes, queue size: ${processingQueue.length}`);
@@ -1102,39 +1176,49 @@
             // Save queue state
             saveQueue();
             
-            // Start processing queue if not already processing
-            if (!isQueueProcessing) {
-                processQueue();
+            // Start processing queue immediately
+            // Allow multiple concurrent processQueue calls up to the limit
+            if (concurrentRequests < MAX_CONCURRENT_REQUESTS) {
+                setTimeout(() => processQueue(), 0);
             }
         }
         
-        // Process queued segments sequentially with concurrency limit
+        // Process queued segments with improved concurrency
         async function processQueue() {
-            if (isQueueProcessing || processingQueue.length === 0) return;
+            if (processingQueue.length === 0) return;
             
-            isQueueProcessing = true;
             updateQueueStatus();
             
-            while (processingQueue.length > 0 && concurrentRequests < MAX_CONCURRENT_REQUESTS) {
-                const segment = processingQueue.shift();
-                updateQueueStatus();
-                saveQueue(); // Save after removing from queue
-                
-                // Process segment without waiting (allow concurrent processing)
-                processSegmentData(segment).catch(error => {
-                    console.error('Unexpected error in processSegmentData:', error);
-                }).finally(() => {
-                    // Check if more segments need processing
-                    if (processingQueue.length > 0 && concurrentRequests < MAX_CONCURRENT_REQUESTS) {
-                        processQueue();
-                    }
-                });
-                
-                // Small delay between starting requests
-                await new Promise(resolve => setTimeout(resolve, 100));
+            // Check if we can process more segments
+            if (concurrentRequests >= MAX_CONCURRENT_REQUESTS) {
+                console.log('Max concurrent requests reached, waiting...');
+                return;
             }
             
-            isQueueProcessing = false;
+            // Process one segment at a time to prevent race conditions
+            const segment = processingQueue.shift();
+            if (!segment) return;
+            
+            updateQueueStatus();
+            saveQueue(); // Save after removing from queue
+            
+            // Process segment without waiting (allow concurrent processing)
+            processSegmentData(segment).catch(error => {
+                console.error('Unexpected error in processSegmentData:', error);
+            }).finally(() => {
+                // Check if more segments need processing
+                if (processingQueue.length > 0) {
+                    // Use setImmediate equivalent for faster processing
+                    setTimeout(() => processQueue(), 0);
+                }
+            });
+            
+            // Try to process more segments if we haven't reached the limit
+            if (processingQueue.length > 0 && concurrentRequests < MAX_CONCURRENT_REQUESTS - 1) {
+                // Small delay to prevent race condition
+                setTimeout(() => processQueue(), 10);
+            }
+            
             updateQueueStatus();
             saveQueue(); // Save final state
         }
@@ -1150,14 +1234,20 @@
                 console.log(`Retry attempt ${retryCount}`);
             }
             
-            // Show processing indicator
+            // Show processing indicator with segment ID
             const processingDiv = document.createElement('div');
             processingDiv.className = 'transcription-segment';
             processingDiv.style.opacity = '0.6';
+            processingDiv.setAttribute('data-segment-id', segment.id);
             processingDiv.innerHTML = '<div class="timestamp">' + segment.timestamp.toLocaleTimeString('ja-JP') + '</div>' +
                                      '<div class="text" style="color: #666;">処理中...</div>';
-            transcriptionDiv.appendChild(processingDiv);
-            transcriptionDiv.scrollTop = transcriptionDiv.scrollHeight;
+            
+            console.log('Created processingDiv for segment:', segment.id);
+            
+            // Insert in correct position based on segment order
+            insertSegmentInOrder(processingDiv, segment.order);
+            
+            console.log('ProcessingDiv inserted, parent:', processingDiv.parentNode ? 'exists' : 'null');
             
             try {
                 // Send to server for transcription
@@ -1168,17 +1258,19 @@
                 const modelSelect = document.getElementById('modelSelect');
                 formData.append('model', modelSelect.value);
                 
-                // Clear blob reference after adding to FormData
-                // (FormData keeps its own copy)
-                segment.blob = null;
+                console.log(`Sending to /api/transcribe with model: ${modelSelect.value}`);
+                console.log(`Audio blob details: size=${segment.blob.size}, type=${segment.blob.type}`);
                 
-                console.log('Sending to /api/transcribe...');
+                // Don't clear blob reference yet - we might need it for retry
+                // segment.blob = null;
+                
                 const response = await fetch('/api/transcribe', {
                     method: 'POST',
                     body: formData
                 });
                 
                 console.log('Response status:', response.status);
+                console.log('Response headers:', response.headers.get('content-type'));
                 
                 if (!response.ok) {
                     const errorText = await response.text();
@@ -1186,21 +1278,11 @@
                 }
                 
                 const result = await response.json();
-                // console.log('Full transcription result:', JSON.stringify(result, null, 2));
-                
-                // Remove processing indicator
-                if (processingDiv && processingDiv.parentNode) {
-                    transcriptionDiv.removeChild(processingDiv);
-                }
-                
-                // Clear the blob to free memory
-                if (segment.blob) {
-                    segment.blob = null; // Release blob reference
-                }
+                console.log('Full transcription result:', JSON.stringify(result, null, 2));
                 
                 // Display transcription
-                // console.log('Result type:', typeof result);
-                // console.log('Result keys:', Object.keys(result));
+                console.log('Result type:', typeof result);
+                console.log('Result keys:', Object.keys(result));
                 
                 // Handle both direct text and nested text property
                 let transcriptionText = '';
@@ -1218,13 +1300,60 @@
                     const cleanedText = transcriptionText.trim();
                     console.log('Cleaned text:', cleanedText);
                     if (cleanedText && cleanedText !== '[BLANK_AUDIO]' && !cleanedText.includes('[MUSIC]') && !cleanedText.includes('[static]') && !cleanedText.includes('[silence]')) {
-                        console.log('Adding transcription segment:', cleanedText);
-                        addTranscriptionSegment(cleanedText);
+                        // Update processing indicator with transcription
+                        if (processingDiv && processingDiv.parentNode) {
+                            // Store transcription in map
+                            transcriptionSegments.set(segment.id, {
+                                timestamp: segment.timestamp,
+                                text: cleanedText,
+                                order: segment.order
+                            });
+                            
+                            // Update the processing div with actual transcription
+                            processingDiv.style.opacity = '1';
+                            const textDiv = processingDiv.querySelector('.text');
+                            if (textDiv) {
+                                textDiv.style.color = '#333';
+                                textDiv.textContent = cleanedText;
+                            }
+                            
+                            // Add delete button
+                            if (!processingDiv.querySelector('.delete-btn')) {
+                                const deleteBtn = document.createElement('button');
+                                deleteBtn.className = 'delete-btn';
+                                deleteBtn.innerHTML = '🗑️';
+                                deleteBtn.title = '削除';
+                                deleteBtn.onclick = function() {
+                                    deleteTranscriptionSegment(segment.id);
+                                };
+                                processingDiv.appendChild(deleteBtn);
+                            }
+                            
+                            // Save transcriptions after update
+                            saveTranscriptions();
+                            
+                            console.log('Transcription updated for segment:', segment.id);
+                        } else {
+                            console.error('ProcessingDiv not found for segment:', segment.id);
+                        }
                     } else {
-                        console.log('Skipping empty or noise transcription');
+                        console.log('Skipping empty or noise transcription:', cleanedText);
+                        // Remove processing indicator for empty/noise transcription
+                        if (processingDiv && processingDiv.parentNode) {
+                            transcriptionDiv.removeChild(processingDiv);
+                        }
                     }
                 } else {
                     console.log('No text found in transcription result');
+                    // Remove processing indicator if no text found
+                    if (processingDiv && processingDiv.parentNode) {
+                        transcriptionDiv.removeChild(processingDiv);
+                    }
+                }
+                
+                // Clear the blob to free memory
+                if (segment.blob) {
+                    segment.blob = null; // Release blob reference
                 }
                 
                 // Reset for next segment
@@ -1291,9 +1420,35 @@
             segmentStartTime = Date.now();
         }
         
+        // Insert segment in correct order based on segment ID
+        function insertSegmentInOrder(segmentDiv, order) {
+            const existingSegments = transcriptionDiv.querySelectorAll('.transcription-segment');
+            let inserted = false;
+            
+            for (const existing of existingSegments) {
+                const existingId = parseInt(existing.getAttribute('data-segment-id') || '0');
+                if (existingId > order) {
+                    existing.parentNode.insertBefore(segmentDiv, existing);
+                    inserted = true;
+                    break;
+                }
+            }
+            
+            if (!inserted) {
+                transcriptionDiv.appendChild(segmentDiv);
+            }
+            
+            // Scroll to bottom
+            transcriptionDiv.scrollTop = transcriptionDiv.scrollHeight;
+        }
+        
         function addTranscriptionSegment(text) {
+            // This function is now mostly replaced by the order-preserving logic
+            // but kept for backward compatibility
+            const segmentId = ++segmentCounter;
             const segment = document.createElement('div');
             segment.className = 'transcription-segment';
+            segment.setAttribute('data-segment-id', segmentId);
             
             const timestamp = document.createElement('div');
             timestamp.className = 'timestamp';
@@ -1303,16 +1458,39 @@
             textDiv.className = 'text';
             textDiv.textContent = text;
             
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = 'delete-btn';
+            deleteBtn.innerHTML = '🗑️';
+            deleteBtn.title = '削除';
+            deleteBtn.onclick = function() {
+                deleteTranscriptionSegment(segmentId);
+            };
+            
             segment.appendChild(timestamp);
             segment.appendChild(textDiv);
+            segment.appendChild(deleteBtn);
             
-            transcriptionDiv.appendChild(segment);
-            
-            // Scroll to bottom
-            transcriptionDiv.scrollTop = transcriptionDiv.scrollHeight;
+            insertSegmentInOrder(segment, segmentId);
             
             // Save transcriptions after adding new segment
             saveTranscriptions();
+        }
+        
+        // Delete a transcription segment
+        function deleteTranscriptionSegment(segmentId) {
+            const segment = document.querySelector(`[data-segment-id="${segmentId}"]`);
+            if (segment) {
+                // Add deleted class instead of removing from DOM
+                segment.classList.add('deleted');
+                
+                // Remove from transcriptionSegments map
+                transcriptionSegments.delete(segmentId);
+                
+                // Save updated transcriptions
+                saveTranscriptions();
+                
+                console.log('Deleted segment:', segmentId);
+            }
         }
         
         function updateStatus() {
@@ -1378,7 +1556,8 @@
         // Copy all transcription text function
         function copyAllTranscriptions() {
             const copyBtn = document.getElementById('copyBtn');
-            const transcriptionSegments = transcriptionDiv.querySelectorAll('.transcription-segment .text');
+            // Only select non-deleted transcription segments
+            const transcriptionSegments = transcriptionDiv.querySelectorAll('.transcription-segment:not(.deleted) .text');
             
             if (transcriptionSegments.length === 0) {
                 copyBtn.textContent = 'コピーする内容がありません';
@@ -1388,7 +1567,7 @@
                 return;
             }
             
-            // Collect all text from transcription segments (excluding timestamps)
+            // Collect all text from non-deleted transcription segments (excluding timestamps)
             const allText = Array.from(transcriptionSegments)
                 .map(segment => segment.textContent.trim())
                 .filter(text => text && text !== '処理中...')
@@ -1457,6 +1636,16 @@
                 const modelSelect = document.getElementById('modelSelect');
                 if (savedState.selectedModel) {
                     modelSelect.value = savedState.selectedModel;
+                }
+                
+                // Restore concurrency setting
+                const concurrencySelect = document.getElementById('concurrencySelect');
+                if (savedState.concurrency) {
+                    concurrencySelect.value = savedState.concurrency;
+                    MAX_CONCURRENT_REQUESTS = parseInt(savedState.concurrency);
+                } else {
+                    // Ensure default value is applied
+                    MAX_CONCURRENT_REQUESTS = parseInt(concurrencySelect.value);
                 }
                 
                 // Show info about restored state
@@ -1592,6 +1781,21 @@
         
         // Save state when model selection changes
         document.getElementById('modelSelect').addEventListener('change', saveState);
+        
+        // Update MAX_CONCURRENT_REQUESTS when concurrency selection changes
+        document.getElementById('concurrencySelect').addEventListener('change', (e) => {
+            MAX_CONCURRENT_REQUESTS = parseInt(e.target.value);
+            console.log('Concurrency limit updated to:', MAX_CONCURRENT_REQUESTS);
+            saveState();
+            
+            // If we have pending items, immediately process more
+            if (processingQueue.length > 0 && concurrentRequests < MAX_CONCURRENT_REQUESTS) {
+                // Process additional segments up to the new limit
+                for (let i = concurrentRequests; i < MAX_CONCURRENT_REQUESTS && processingQueue.length > 0; i++) {
+                    setTimeout(() => processQueue(), 0);
+                }
+            }
+        });
         
         // Save state periodically while recording
         setInterval(() => {

@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "node --loader ts-node/esm src/index.ts",
+    "dev": "tsx src/index.ts",
     "test": "jest"
   },
   "keywords": [
@@ -38,6 +38,7 @@
     "@types/node": "^20.11.17",
     "jest": "^29.7.0",
     "ts-node": "^10.9.2",
+    "tsx": "^4.20.3",
     "typescript": "^5.3.3"
   }
 }
