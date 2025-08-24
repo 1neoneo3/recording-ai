@@ -54,7 +54,7 @@ uv add "faster-whisper[cuda]"
 
 ## 🚀 使用方法
 
-### 🌐 **Webインターフェース（推奨）**
+### 🌐 **Webインターフェース（推奨・最も簡単）**
 
 ```bash
 npm start
@@ -68,23 +68,15 @@ npm start
 - 📊 リアルタイム処理状況表示
 - 💾 自動セッション保存
 
-### 📱 CLIモード（開発者向け）
+### 🛠️ **開発モード**
 
 ```bash
-npm run dev -- --cli
+npm run dev
 ```
 
-対話式インターフェイスで録音を開始・停止：
+開発サーバーでの動作確認・デバッグに使用
 
-```
-音声リアルタイム文字起こし CLI ready!
-Commands:
-  start  - 録音開始（デーモン連携）
-  stop   - 録音停止・瞬間変換
-  status - 録音状態・デーモン状況確認
-  sessions - 全セッション表示
-  quit   - 終了
-```
+**注意**: 現在CLIモードは使用されていません。すべての機能はWebインターフェースまたは開発モードで利用可能です。
 
 ### 🎵 システム音声録音
 
@@ -95,37 +87,43 @@ Commands:
 3. 「Built-in Output」と「BlackHole 2ch」の両方にチェック
 4. システム環境設定 → サウンド → 出力で「マルチ出力デバイス」を選択
 5. 録音したい音声を再生
-6. CLIで`start`コマンドを実行
+6. `npm start`でサーバーを起動し、Webインターフェースで録音開始
 
 ### 🎤 マイク録音
 
-マイク録音は追加設定なしで利用可能です：
+マイク録音はWebインターフェースから利用可能です：
 
 ```bash
-npm run dev -- --cli
-# start コマンドでマイク録音開始
+npm start
+# http://localhost:3001/realtime でマイク録音開始
 ```
 
 ### 📝 音声ファイル直接変換
 
 ```bash
-# Whisper OSS版を使用
-npm run dev -- --transcribe path/to/audio.wav
+# Faster Whisperを直接使用（推奨：デーモンモード）
+# サーバー起動後、Webインターフェースでファイルアップロード
 
-# Faster Whisperを直接使用（推奨：4倍高速）
-uv run python src/python/faster_whisper_transcribe.py path/to/audio.wav --model base
+# または Python スクリプト直接実行
+uv run python src/python/faster_whisper_transcribe.py path/to/audio.wav --model large-v3
 
-# GPU使用の場合（さらに高速）
-uv run python src/python/faster_whisper_transcribe.py path/to/audio.wav --model base --device cuda
+# GPU使用の場合（自動検出、手動指定も可能）
+uv run python src/python/faster_whisper_transcribe.py path/to/audio.wav --model large-v3 --device auto
 ```
 
 ### 🌐 APIサーバー起動
 
 ```bash
+# 本番モード（推奨）
+npm start
+
+# 開発モード
 npm run dev
 ```
 
 サーバーは `http://localhost:3001` で起動します。
+- リアルタイム文字起こし: `http://localhost:3001/realtime`
+- API エンドポイント: `http://localhost:3001/api/`
 
 ## API エンドポイント
 
