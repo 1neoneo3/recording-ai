@@ -211,7 +211,10 @@ export class RecordingManager {
       console.log(`Using faster-whisper model: ${targetModel}`);
       
       try {
-        return await this.fasterWhisperService.transcribeFile(filePath, targetModel);
+        // Use GPU if available, otherwise CPU
+        const device = 'cuda';  // Force GPU usage
+        const computeType = 'float32';  // Most stable for all GPUs
+        return await this.fasterWhisperService.transcribeFile(filePath, targetModel, device, computeType);
       } catch (error) {
         console.error('faster-whisper failed:', error);
         throw error;
