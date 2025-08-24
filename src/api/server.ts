@@ -41,7 +41,6 @@ app.use((req, res, next) => {
 
 // Serve static files from public directory with caching
 const publicPath = path.resolve(__dirname, '../../public');
-console.log('Serving static files from:', publicPath);
 app.use(express.static(publicPath, {
   maxAge: '1h', // Cache static files for 1 hour
   etag: true,
@@ -160,6 +159,9 @@ app.get('/api/sessions', (req: Request, res: Response) => {
  * Upload and transcribe audio file
  */
 app.post('/api/transcribe', upload.single('audio'), async (req: Request, res: Response) => {
+  // Declare audioFilePath outside try block for cleanup access
+  let audioFilePath: string | undefined;
+  
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No audio file provided' });
@@ -170,7 +172,7 @@ app.post('/api/transcribe', upload.single('audio'), async (req: Request, res: Re
     
     // Check if the file needs conversion to WAV
     const fileExt = path.extname(req.file.filename).toLowerCase();
-    let audioFilePath = req.file.path;
+    audioFilePath = req.file.path;
     
     // If not WAV, convert to WAV using ffmpeg
     if (fileExt !== '.wav') {
@@ -187,23 +189,50 @@ app.post('/api/transcribe', upload.single('audio'), async (req: Request, res: Re
         console.log(`Converting ${fileExt || 'webm'} to WAV: ${req.file.path} -> ${wavPath}`);
         // Convert to WAV format with 16kHz sample rate, mono, PCM 16-bit
         // Add -f webm to help ffmpeg recognize the format
-        const ffmpegCmd = fileExt === '.webm' || !fileExt 
-          ? `ffmpeg -f webm -i "${req.file.path}" -ar 16000 -ac 1 -acodec pcm_s16le -f wav "${wavPath}"`
-          : `ffmpeg -i "${req.file.path}" -ar 16000 -ac 1 -acodec pcm_s16le -f wav "${wavPath}"`;
-        console.log('FFmpeg command:', ffmpegCmd);
+        // Try different ffmpeg locations
+        const ffmpegPaths = [
+          'ffmpeg',
+          '/usr/bin/ffmpeg',
+          '/usr/local/bin/ffmpeg',
+          './bin/ffmpeg',
+          process.cwd() + '/bin/ffmpeg'
+        ];
         
-        const result = await execAsync(ffmpegCmd);
-        console.log('FFmpeg output:', result.stdout);
-        if (result.stderr) console.log('FFmpeg stderr:', result.stderr);
+        let ffmpegCmd = '';
+        for (const ffmpegPath of ffmpegPaths) {
+          try {
+            await execAsync(`which ${ffmpegPath}`, { timeout: 1000 });
+            ffmpegCmd = fileExt === '.webm' || !fileExt 
+              ? `${ffmpegPath} -f webm -i "${req.file.path}" -ar 16000 -ac 1 -acodec pcm_s16le -f wav "${wavPath}"`
+              : `${ffmpegPath} -i "${req.file.path}" -ar 16000 -ac 1 -acodec pcm_s16le -f wav "${wavPath}"`;
+            break;
+          } catch (e) {
+            continue;
+          }
+        }
         
-        audioFilePath = wavPath;
+        if (!ffmpegCmd) {
+          // If ffmpeg is not found, try to use the webm file directly
+          console.warn('ffmpeg not found, attempting direct transcription of webm file');
+          audioFilePath = req.file.path; // Use original webm file
+        } else {
+          console.log('FFmpeg command:', ffmpegCmd);
+          
+          const result = await execAsync(ffmpegCmd);
+          console.log('FFmpeg output:', result.stdout);
+          if (result.stderr) console.log('FFmpeg stderr:', result.stderr);
+          
+          audioFilePath = wavPath;
+        }
         
-        // Check converted file size
-        const stats = fs.statSync(wavPath);
-        console.log(`Converted WAV file size: ${stats.size} bytes`);
-        
-        // Clean up original file
-        fs.unlinkSync(req.file.path);
+        // Check converted file size (only if conversion was performed)
+        if (audioFilePath === wavPath) {
+          const stats = fs.statSync(wavPath);
+          console.log(`Converted WAV file size: ${stats.size} bytes`);
+          
+          // Clean up original file
+          fs.unlinkSync(req.file.path);
+        }
       } catch (conversionError) {
         console.error('Audio conversion failed:', conversionError);
         throw new Error('Failed to convert audio to WAV format');
@@ -231,7 +260,7 @@ app.post('/api/transcribe', upload.single('audio'), async (req: Request, res: Re
         fs.unlinkSync(req.file.path);
       }
       // Also try to clean up any converted WAV file
-      if (audioFilePath && audioFilePath !== req.file.path && fs.existsSync(audioFilePath)) {
+      if (audioFilePath && audioFilePath !== req.file?.path && fs.existsSync(audioFilePath)) {
         fs.unlinkSync(audioFilePath);
       }
     } catch (cleanupError) {
@@ -280,6 +309,7 @@ async function startServer() {
   try {
     // Start server immediately for faster page loading
     app.listen(PORT, () => {
+      console.log('Serving static files from:', publicPath);
       console.log(`Recording AI server running on port ${PORT}`);
       console.log(`Health check: http://localhost:${PORT}/health`);
       console.log(`Realtime transcription: http://localhost:${PORT}/realtime`);

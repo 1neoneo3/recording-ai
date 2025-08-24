@@ -1,19 +1,22 @@
 # Recording AI - Mac System Audio Recorder with Whisper
 
-TypeScript製のmacシステム音声録音・音声認識システム。OpenAI WhisperのOSS版を使用して無料で音声をテキストに変換します。
+TypeScript製のmacシステム音声録音・音声認識システム。OpenAI WhisperのOSS版とFaster Whisperを使用して無料で音声をテキストに変換します。
 
 ## 特徴
 
 - 🎙️ macシステム音声・マイク音声の録音（BlackHole使用）
-- 🤖 Whisper OSS版による高精度音声認識（日本語対応）
+- 🤖 Whisper OSS版とFaster Whisper（4倍高速）による高精度音声認識（日本語対応）
 - 📝 音声ファイルの保存・管理
 - 🌐 Next.js統合用REST API
 - 🔧 CLI・APIサーバー両対応
+- ⚡ uvによる高速Python依存関係管理
 
 ## 必要な環境
 
-- macOS
+- macOS/Linux
 - Node.js 18+
+- Python 3.8+
+- uv (Python package manager)
 - ffmpeg
 - BlackHole（仮想オーディオドライバー）
 
@@ -25,11 +28,27 @@ TypeScript製のmacシステム音声録音・音声認識システム。OpenAI 
 brew install blackhole-2ch
 ```
 
-### 2. プロジェクトのインストール
+### 2. uvのインストール
 
 ```bash
+# macOS/Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# または
+brew install uv
+```
+
+### 3. プロジェクトのインストール
+
+```bash
+# Node.js依存関係
 npm install
 npm run build
+
+# Python依存関係（Faster Whisper with CUDA support）
+uv sync
+
+# CUDA対応版のインストール（GPU利用可能の場合）
+uv add "faster-whisper[cuda]"
 ```
 
 ## 使用方法
@@ -75,7 +94,14 @@ npm run dev -- --cli
 ### 📝 音声ファイル直接変換
 
 ```bash
+# Whisper OSS版を使用
 npm run dev -- --transcribe path/to/audio.wav
+
+# Faster Whisperを直接使用（推奨：4倍高速）
+uv run python src/python/faster_whisper_transcribe.py path/to/audio.wav --model base
+
+# GPU使用の場合（さらに高速）
+uv run python src/python/faster_whisper_transcribe.py path/to/audio.wav --model base --device cuda
 ```
 
 ### 🌐 APIサーバー起動
@@ -130,6 +156,7 @@ export default async function handler(req, res) {
 
 ### Whisperモデル選択
 
+#### Whisper OSS版（JavaScript）
 ```typescript
 const manager = new RecordingManager('./data', 'Xenova/whisper-base');
 ```
@@ -140,6 +167,36 @@ const manager = new RecordingManager('./data', 'Xenova/whisper-base');
 - `Xenova/whisper-small` - 高精度
 - `Xenova/whisper-medium` - 更に高精度
 - `Xenova/whisper-large-v3` - 最高精度
+
+#### Faster Whisper（Python - 推奨）
+```bash
+# 依存関係チェック
+uv run python src/python/faster_whisper_transcribe.py --check-deps
+
+# 基本使用（CPU）
+uv run python src/python/faster_whisper_transcribe.py audio.wav --model base
+
+# GPU使用（CUDA）
+uv run python src/python/faster_whisper_transcribe.py audio.wav --model base --device cuda
+
+# 自動デバイス選択（推奨）
+uv run python src/python/faster_whisper_transcribe.py audio.wav --model base --device auto
+```
+
+利用可能なモデル：
+- `tiny` - 最軽量（~39MB）
+- `base` - 推奨（~74MB）
+- `small` - 高精度（~244MB）
+- `medium` - 更に高精度（~769MB）
+- `large-v2` - 最高精度（~1.5GB）
+- `large-v3` - 最新モデル（~1.5GB）
+
+### パフォーマンス比較
+
+| 実装 | 速度 | メモリ使用量 | GPU対応 | 精度 |
+|------|------|------------|---------|------|
+| Whisper OSS | 標準 | 高 | Yes | 標準 |
+| Faster Whisper | **4倍高速** | 中 | Yes | 同等 |
 
 ### 録音設定
 

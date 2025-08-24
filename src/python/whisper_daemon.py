@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-Faster Whisper transcription script
-Uses SYSTRAN/faster-whisper for efficient transcription
+Whisper Daemon - Persistent faster-whisper process
+Keeps model loaded in memory for fast transcription
 """
 
 import sys
 import json
 import os
 import time
-import argparse
+import signal
+import threading
 from pathlib import Path
 import warnings
 import site
@@ -90,11 +91,6 @@ try:
         
 except Exception as e:
     print(f"Warning: Could not set NVIDIA library paths: {e}", file=sys.stderr)
-# Only disable CUDA if explicitly requesting CPU device
-if '--device' in sys.argv:
-    device_arg_index = sys.argv.index('--device')
-    if device_arg_index + 1 < len(sys.argv) and sys.argv[device_arg_index + 1] == 'cpu':
-        os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
 # Add error handling for imports
 try:
@@ -105,29 +101,28 @@ except ImportError:
     }))
     sys.exit(1)
 
-# Default model directory
-MODEL_DIR = os.path.expanduser("~/.cache/faster-whisper")
+# Global variables
+model = None
+model_name = None
+device = None
+compute_type = None
+shutdown_flag = False
 
-def transcribe_audio(audio_path, model_name="base", device="auto", compute_type="auto"):
-    """
-    Transcribe audio file using faster-whisper
+def signal_handler(signum, frame):
+    """Handle shutdown signals"""
+    global shutdown_flag
+    print("Received shutdown signal, cleaning up...", file=sys.stderr)
+    shutdown_flag = True
+
+def initialize_model(model_name_param="large-v3", device_param="auto", compute_type_param="auto"):
+    """Initialize the whisper model once"""
+    global model, model_name, device, compute_type
     
-    Args:
-        audio_path: Path to audio file
-        model_name: Model size (tiny, base, small, medium, large-v2, large-v3)
-        device: Device to use (cpu, cuda, auto)
-        compute_type: Compute type (int8, float16, float32, auto)
-    """
     try:
-        # Validate audio file exists
-        if not os.path.exists(audio_path):
-            return {
-                "error": f"Audio file not found: {audio_path}",
-                "text": ""
-            }
+        print(f"Initializing model: {model_name_param}, device: {device_param}", file=sys.stderr)
         
         # Auto-detect device if needed
-        if device == "auto":
+        if device_param == "auto":
             # Test CUDA availability and try GPU first
             try:
                 import torch
@@ -136,26 +131,24 @@ def transcribe_audio(audio_path, model_name="base", device="auto", compute_type=
                     test_tensor = torch.tensor([1.0]).cuda()
                     del test_tensor  # Clean up
                     torch.cuda.empty_cache()
-                    device = "cuda"
+                    device_param = "cuda"
                     print("Auto device selection: Using CUDA GPU", file=sys.stderr)
                 else:
-                    device = "cpu"
+                    device_param = "cpu"
                     print("Auto device selection: CUDA not available, using CPU", file=sys.stderr)
             except Exception as e:
                 print(f"CUDA test failed, falling back to CPU: {e}", file=sys.stderr)
-                device = "cpu"
+                device_param = "cpu"
         
         # Auto-select compute type based on device
-        if compute_type == "auto":
-            if device == "cuda":
-                # Use int8 for CUDA to avoid cuDNN issues
-                compute_type = "int8"
+        if compute_type_param == "auto":
+            if device_param == "cuda":
+                compute_type_param = "float32"  # Use float32 for better accuracy
             else:
-                # Use int8 for CPU as well for consistency
-                compute_type = "int8"
+                compute_type_param = "int8"
         
         # Set CUDA memory fraction and environment for stability
-        if device == "cuda":
+        if device_param == "cuda":
             try:
                 import torch
                 if torch.cuda.is_available():
@@ -171,38 +164,75 @@ def transcribe_audio(audio_path, model_name="base", device="auto", compute_type=
             except Exception as e:
                 print(f"CUDA memory setup warning: {e}", file=sys.stderr)
         
-        # Load model with retry logic for CUDA issues
-        print(f"Loading faster-whisper model: {model_name} on {device} with {compute_type}", file=sys.stderr)
         start_time = time.time()
         
         try:
             model = WhisperModel(
-                model_name, 
-                device=device,
-                compute_type=compute_type,
-                download_root=MODEL_DIR
+                model_name_param, 
+                device=device_param,
+                compute_type=compute_type_param,
+                download_root=os.path.expanduser("~/.cache/faster-whisper")
             )
+            
+            # Store current configuration
+            model_name = model_name_param
+            device = device_param  
+            compute_type = compute_type_param
+            
             load_time = time.time() - start_time
-            print(f"Model loaded in {load_time:.2f} seconds", file=sys.stderr)
+            print(f"Model loaded successfully in {load_time:.2f} seconds", file=sys.stderr)
+            print(f"Configuration: model={model_name}, device={device}, compute_type={compute_type}", file=sys.stderr)
+            
+            return True
+            
         except Exception as e:
             # If CUDA fails, retry with CPU
-            if device == "cuda":
+            if device_param == "cuda":
                 print(f"CUDA model loading failed: {e}, retrying with CPU", file=sys.stderr)
-                device = "cpu"
-                compute_type = "int8"
+                device_param = "cpu"
+                compute_type_param = "int8"
+                
                 model = WhisperModel(
-                    model_name, 
-                    device=device,
-                    compute_type=compute_type,
-                    download_root=MODEL_DIR
+                    model_name_param, 
+                    device=device_param,
+                    compute_type=compute_type_param,
+                    download_root=os.path.expanduser("~/.cache/faster-whisper")
                 )
+                
+                # Store current configuration
+                model_name = model_name_param
+                device = device_param
+                compute_type = compute_type_param
+                
                 load_time = time.time() - start_time
                 print(f"Model loaded on CPU in {load_time:.2f} seconds", file=sys.stderr)
+                return True
             else:
                 raise e
+                
+    except Exception as e:
+        print(f"Failed to initialize model: {e}", file=sys.stderr)
+        return False
+
+def transcribe_audio_file(audio_path):
+    """Transcribe a single audio file using the loaded model"""
+    global model, model_name, device, compute_type
+    
+    if model is None:
+        return {
+            "error": "Model not initialized",
+            "text": ""
+        }
+    
+    try:
+        # Validate audio file exists
+        if not os.path.exists(audio_path):
+            return {
+                "error": f"Audio file not found: {audio_path}",
+                "text": ""
+            }
         
-        # Transcribe with error handling
-        print(f"Starting transcription of {audio_path}", file=sys.stderr)
+        print(f"Transcribing: {audio_path}", file=sys.stderr)
         transcribe_start_time = time.time()
         
         try:
@@ -233,10 +263,12 @@ def transcribe_audio(audio_path, model_name="base", device="auto", compute_type=
                     word_timestamps=False,
                     condition_on_previous_text=False
                 )
-            print(f"Transcription completed in {time.time() - transcribe_start_time:.2f} seconds", file=sys.stderr)
+            
+            transcribe_time = time.time() - transcribe_start_time
+            print(f"Transcription completed in {transcribe_time:.2f} seconds", file=sys.stderr)
+            
         except Exception as transcribe_error:
             print(f"Transcription error: {transcribe_error}", file=sys.stderr)
-            # Try to capture any partial output before the error
             raise transcribe_error
         
         # Collect transcription text with error handling
@@ -245,14 +277,11 @@ def transcribe_audio(audio_path, model_name="base", device="auto", compute_type=
             for segment in segments:
                 text_segments.append(segment.text.strip())
             
-            transcribe_time = time.time() - transcribe_start_time
-            
             # Join segments
             full_text = " ".join(text_segments)
             
             # Debug output
-            print(f"DEBUG: Extracted {len(text_segments)} segments", file=sys.stderr)
-            print(f"DEBUG: Full text: '{full_text}'", file=sys.stderr)
+            print(f"Extracted {len(text_segments)} segments: '{full_text}'", file=sys.stderr)
             
             # Clean up CUDA memory if using CUDA
             if device == "cuda":
@@ -272,29 +301,25 @@ def transcribe_audio(audio_path, model_name="base", device="auto", compute_type=
                 "model": model_name,
                 "device": device,
                 "compute_type": compute_type,
-                "load_time": round(load_time, 2),
                 "transcribe_time": round(transcribe_time, 2),
                 "segments": len(text_segments)
             }
             
-            # Also output to stderr as backup (for cuDNN crashes)
-            print(f"WHISPER_RESULT_JSON:{json.dumps(result, ensure_ascii=False)}", file=sys.stderr)
-            
             return result
+            
         except Exception as e:
-            print(f"WARNING: Error processing segments, but transcription may have succeeded: {e}", file=sys.stderr)
-            # Try to return basic result even if segment processing failed
+            print(f"Error processing segments: {e}", file=sys.stderr)
             return {
                 "text": "Transcription completed but segment processing failed",
                 "error": f"Segment processing error: {str(e)}",
                 "model": model_name,
                 "device": device,
                 "compute_type": compute_type,
-                "load_time": round(load_time, 2) if 'load_time' in locals() else 0,
                 "transcribe_time": round(time.time() - transcribe_start_time, 2)
             }
         
     except Exception as e:
+        print(f"Transcription failed: {e}", file=sys.stderr)
         return {
             "error": str(e),
             "text": "",
@@ -302,97 +327,69 @@ def transcribe_audio(audio_path, model_name="base", device="auto", compute_type=
             "device": device
         }
 
-def check_dependencies():
-    """Check if required dependencies are installed"""
-    dependencies = {
-        "faster_whisper": False,
-        "torch": False,
-        "numpy": False,
-        "cuda_available": False
-    }
-    
-    try:
-        import faster_whisper
-        dependencies["faster_whisper"] = True
-        print(f"faster-whisper version: {faster_whisper.__version__}", file=sys.stderr)
-    except ImportError as e:
-        print(f"faster-whisper import error: {e}", file=sys.stderr)
-    
-    try:
-        import torch
-        dependencies["torch"] = True
-        dependencies["cuda_available"] = torch.cuda.is_available()
-        print(f"PyTorch version: {torch.__version__}", file=sys.stderr)
-        print(f"CUDA available: {torch.cuda.is_available()}", file=sys.stderr)
-        if torch.cuda.is_available():
-            print(f"GPU device: {torch.cuda.get_device_name(0)}", file=sys.stderr)
-            print(f"GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB", file=sys.stderr)
-    except ImportError as e:
-        print(f"PyTorch import error: {e}", file=sys.stderr)
-    
-    try:
-        import numpy
-        dependencies["numpy"] = True
-        print(f"NumPy version: {numpy.__version__}", file=sys.stderr)
-    except ImportError as e:
-        print(f"NumPy import error: {e}", file=sys.stderr)
-    
-    return dependencies
-
 def main():
-    parser = argparse.ArgumentParser(description='Transcribe audio using faster-whisper')
-    parser.add_argument('audio_file', nargs='?', help='Path to audio file')
-    parser.add_argument('--model', default='base', 
-                       choices=['tiny', 'base', 'small', 'medium', 'large-v2', 'large-v3'],
-                       help='Model size (default: base)')
-    parser.add_argument('--device', default='auto',
-                       choices=['cpu', 'cuda', 'auto'],
-                       help='Device to use (default: auto)')
-    parser.add_argument('--compute-type', default='auto',
-                       choices=['int8', 'float16', 'float32', 'auto'],
-                       help='Compute type (default: auto)')
-    parser.add_argument('--check-deps', action='store_true',
-                       help='Check dependencies and exit')
+    """Main daemon loop"""
+    global shutdown_flag
     
-    args = parser.parse_args()
+    # Set up signal handlers
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
     
-    if args.check_deps:
-        deps = check_dependencies()
-        print(json.dumps(deps, indent=2))
-        sys.exit(0)
+    print("Whisper Daemon starting...", file=sys.stderr)
     
-    # Check if audio file is provided
-    if not args.audio_file:
-        parser.error('audio_file is required unless using --check-deps')
+    # Initialize model
+    if not initialize_model():
+        print("Failed to initialize model, exiting", file=sys.stderr)
+        sys.exit(1)
     
-    # Transcribe audio
-    result = transcribe_audio(
-        args.audio_file,
-        model_name=args.model,
-        device=args.device,
-        compute_type=args.compute_type
-    )
+    print("Whisper Daemon ready for requests", file=sys.stderr)
     
-    # Output JSON result and force flush
-    output = json.dumps(result, ensure_ascii=False, indent=2)
-    
-    # Write result to temporary file as backup
-    temp_file = f"/tmp/whisper_result_{os.getpid()}.json"
+    # Main processing loop
     try:
-        with open(temp_file, 'w', encoding='utf-8') as f:
-            f.write(output)
-    except Exception:
-        pass
+        while not shutdown_flag:
+            try:
+                # Read input from stdin (blocking)
+                line = sys.stdin.readline()
+                if not line:  # EOF
+                    print("Received EOF, shutting down", file=sys.stderr)
+                    break
+                    
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Parse JSON request
+                try:
+                    request = json.loads(line)
+                    audio_path = request.get('audio_path')
+                    
+                    if not audio_path:
+                        result = {"error": "No audio_path provided", "text": ""}
+                    else:
+                        result = transcribe_audio_file(audio_path)
+                    
+                except json.JSONDecodeError:
+                    # Treat as plain audio path for backward compatibility
+                    result = transcribe_audio_file(line)
+                
+                # Send JSON response
+                response = json.dumps(result, ensure_ascii=False)
+                print(response)
+                sys.stdout.flush()
+                
+            except KeyboardInterrupt:
+                print("Received KeyboardInterrupt", file=sys.stderr)
+                break
+            except Exception as e:
+                error_result = {"error": f"Processing error: {str(e)}", "text": ""}
+                print(json.dumps(error_result), file=sys.stderr)
+                print(json.dumps(error_result))
+                sys.stdout.flush()
+                
+    except Exception as e:
+        print(f"Fatal error in main loop: {e}", file=sys.stderr)
     
-    print(output)
-    sys.stdout.flush()
-    
-    # Force exit to prevent cuDNN errors after successful transcription
-    if not result.get("error"):
-        # Give OS time to flush output
-        import time
-        time.sleep(0.1)
-        sys.exit(0)
+    print("Whisper Daemon shutting down", file=sys.stderr)
 
 if __name__ == "__main__":
     main()

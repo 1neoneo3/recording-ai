@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 
 export class WhisperPythonService {
-  private pythonPath: string = 'python3';
+  private pythonPath: string = 'uv run python';
   private outputDir: string;
   private dependenciesCache: { python: boolean; whisper: boolean } | null = null;
 

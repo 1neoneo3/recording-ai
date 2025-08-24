@@ -1,0 +1,30 @@
+[project]
+name = "recording-ai-python"
+version = "1.0.0"
+description = "Python backend for Recording AI with Faster Whisper"
+authors = [{name = "Recording AI"}]
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+
+dependencies = [
+    "faster-whisper>=1.0.0",
+    "numpy",
+    "torch>=2.0.0",
+    "torchvision",
+    "torchaudio",
+    "nvidia-cudnn-cu12>=9.1.0.70",
+    "pip>=25.0.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest",
+]

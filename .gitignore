@@ -95,3 +95,32 @@ data/transcriptions/*.txt
 # Backup files
 *.bak
 *.backup
+
+# Binary files and packages
+*.tar.xz
+*.tar.gz
+*.zip
+*.deb
+*.rpm
+*.dmg
+*.exe
+
+# FFmpeg binaries
+bin/ffmpeg*
+bin/ffprobe*
+
+# CUDA/GPU related files
+cuda-*.pin
+cuda-keyring*.deb
+*.cu
+*.cuh
+
+# Python installation scripts
+get-pip.py
+install-*.py
+
+# Large binary assets
+*.bin
+*.so
+*.dylib
+*.dll
